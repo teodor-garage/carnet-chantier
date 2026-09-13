@@ -228,7 +228,9 @@ table.lots input.num-in{font-family:var(--mono);text-align:right;}
   #printSheet{display:block;position:absolute;top:0;left:0;width:100%;padding:0;}
   body{background:#fff;padding:0;}
 }
-.psheet{font-family:var(--sans);color:#1a1a1a;padding:28px;max-width:760px;margin:0 auto;font-size:13px;}
+.psheet{position:relative;font-family:var(--sans);color:#1a1a1a;padding:28px;max-width:760px;margin:0 auto;font-size:13px;}
+.ps-stamp{position:absolute;top:118px;right:36px;border:3px double #2f7d4f;border-radius:6px;color:#2f7d4f;padding:7px 20px;font-family:var(--display);font-weight:700;font-size:21px;letter-spacing:2px;text-transform:uppercase;text-align:center;transform:rotate(-11deg);opacity:.8;pointer-events:none;}
+.ps-stamp .sub{display:block;font-family:var(--sans);font-weight:600;font-size:10.5px;letter-spacing:.4px;text-transform:none;margin-top:2px;}
 .psheet h2{font-family:var(--display);font-size:22px;margin:0;}
 .ps-top{display:flex;justify-content:space-between;gap:24px;border-bottom:2px solid #1a1a1a;padding-bottom:14px;margin-bottom:18px;}
 .ps-company{font-size:12px;line-height:1.5;}
@@ -379,11 +381,20 @@ var Store = {
     try{ assetsApi = await window.claude.use('assets'); }catch(e){ assetsApi=null; }
     try{ downloadsApi = await window.claude.use('downloads'); }catch(e){ downloadsApi=null; }
     state.db=db; state.assetsApi=assetsApi; state.downloadsApi=downloadsApi;
+    /* alreadyInitialized distinguishes "jamais ouvert sur cet appareil" (on
+       propose l'exemple) de "tout supprimé volontairement" (on respecte ce
+       choix et on ne réaffiche rien) — sans ça, vider la liste faisait
+       réapparaître le chantier d'exemple au rechargement suivant. */
+    var alreadyInitialized=false;
     if(db){
       state.mode='db';
       try{
         var setSnap = await db.doc('settings/entreprise').get();
         if(setSnap.exists) state.settings = Object.assign(defaultSettings(), setSnap.data());
+      }catch(e){}
+      try{
+        var metaSnap = await db.doc('meta/carnet').get();
+        alreadyInitialized = !!(metaSnap && metaSnap.exists);
       }catch(e){}
       try{
         var q = await db.collection('chantiers').orderBy('updatedAt','desc').limit(500).get();
@@ -393,6 +404,7 @@ var Store = {
       state.mode='local';
       var raw=null;
       try{ raw = localStorage.getItem(LOCAL_KEY); }catch(e){}
+      alreadyInitialized = raw!=null;
       if(raw){
         try{
           var parsed = JSON.parse(raw);
@@ -406,8 +418,11 @@ var Store = {
       if(c.tvaApplicable==null) c.tvaApplicable = state.settings.tvaApplicable!==false;
       if(c.tvaPct==null) c.tvaPct = state.settings.tvaPct!=null ? state.settings.tvaPct : 20;
     });
-    if(state.chantiers.length===0){
+    if(state.chantiers.length===0 && !alreadyInitialized){
       await Store.seedExample();
+    }
+    if(state.mode==='db' && !alreadyInitialized){
+      try{ await state.db.doc('meta/carnet').set({initialized:true, at:new Date().toISOString()}); }catch(e){}
     }
   },
   persistLocal(){
@@ -1481,15 +1496,17 @@ function printFacture(ch){
       '<td class="r">'+eur(a.prixVenteHT)+'</td></tr>';
   }).join('');
 
+  var paidDateStr = ch.facturePaiementDate ? new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR') : dateStr;
+
   var html =
     '<div class="psheet">'+
+      (ch.factureStatutPaiement==='payee'?'<div class="ps-stamp">Payée<span class="sub">le '+paidDateStr+'</span></div>':'')+
       '<div class="ps-top">'+
         '<div class="ps-company"><h2>'+esc(s.nom||'Votre entreprise')+'</h2>'+
           (s.forme?esc(s.forme)+'<br>':'')+ (s.siret?'SIRET '+esc(s.siret)+'<br>':'') +
           (s.adresse?esc(s.adresse)+'<br>':'') + [s.tel,s.email].filter(Boolean).map(esc).join(' · ') +
         '</div>'+
         '<div class="ps-meta"><div class="big">FACTURE '+esc(ch.factureNumero)+'</div>Date d’émission : '+dateStr+'<br>Échéance : '+echeance.toLocaleDateString('fr-FR')+
-          (ch.factureStatutPaiement==='payee'?'<br><span style="color:#2f7d4f;font-weight:700;">PAYÉE'+(ch.facturePaiementDate?' le '+new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR'):'')+'</span>':'')+
         '</div>'+
       '</div>'+
       '<div class="ps-block"><div class="ps-label">Client</div>'+esc(ch.client.nom)+'<br>'+esc(ch.adresse)+
@@ -1718,10 +1735,6 @@ function buildFacturePdf(ch,ft,alloc){
   var dateStr = ch.factureDate ? new Date(ch.factureDate).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
   doc.text('Date d\'emission : '+dateStr, pageW-M, y+10, {align:'right'});
   doc.text('Echeance : '+echeance.toLocaleDateString('fr-FR'), pageW-M, y+14.2, {align:'right'});
-  if(ch.factureStatutPaiement==='payee'){
-    doc.setFont('helvetica','bold'); doc.setTextColor(good[0],good[1],good[2]);
-    doc.text('PAYEE'+(ch.facturePaiementDate?(' le '+new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR')):''), pageW-M, y+18.4, {align:'right'});
-  }
 
   y = Math.max(hy, y+18)+4;
   hr(accent,0.9); y+=8;
@@ -1800,7 +1813,42 @@ function buildFacturePdf(ch,ft,alloc){
     doc.splitTextToSize(ct, contentW).forEach(function(wl){ ensureSpace(6); doc.text(wl,M,y); y+=4; });
   });
 
+  if(ch.factureStatutPaiement==='payee'){
+    var paidDateStr = ch.facturePaiementDate ? new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR') : dateStr;
+    drawPaidStamp(doc, pageW, paidDateStr, good);
+  }
+
   return doc;
+}
+/* Tampon "PAYÉE" façon tampon encreur : double bordure rectangulaire tournée
+   + texte tourné au même angle. jsPDF ne fournit pas de rect() incliné, donc
+   on fait tourner les 4 coins à la main et on trace le contour avec lines(). */
+function drawPaidStamp(doc,pageW,dateStr,color){
+  var cx=pageW-70, cy=64, w=56, h=24, angle=-12;
+  var rad=angle*Math.PI/180, cos=Math.cos(rad), sin=Math.sin(rad);
+  function rot(px,py){ return [px*cos-py*sin+cx, px*sin+py*cos+cy]; }
+  function borderAt(margin){
+    var hw=w/2-margin, hh=h/2-margin;
+    var c=[rot(-hw,-hh),rot(hw,-hh),rot(hw,hh),rot(-hw,hh)];
+    var deltas=[
+      [c[1][0]-c[0][0],c[1][1]-c[0][1]],
+      [c[2][0]-c[1][0],c[2][1]-c[1][1]],
+      [c[3][0]-c[2][0],c[3][1]-c[2][1]],
+      [c[0][0]-c[3][0],c[0][1]-c[3][1]]
+    ];
+    doc.lines(deltas, c[0][0], c[0][1], [1,1], 'S', true);
+  }
+  var gsOn=false;
+  try{ doc.saveGraphicsState(); doc.setGState(new doc.GState({opacity:0.62})); gsOn=true; }catch(e){}
+  doc.setDrawColor(color[0],color[1],color[2]);
+  doc.setTextColor(color[0],color[1],color[2]);
+  doc.setLineWidth(1.1); borderAt(0);
+  doc.setLineWidth(0.5); borderAt(2.4);
+  doc.setFont('helvetica','bold'); doc.setFontSize(15);
+  doc.text('PAYÉE', cx, cy-2, {angle:angle, align:'center'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(8);
+  doc.text('le '+dateStr, cx, cy+5.5, {angle:angle, align:'center'});
+  if(gsOn){ try{ doc.restoreGraphicsState(); }catch(e){} }
 }
 async function downloadFacturePdf(ch){
   if(!ch.factureNumero) return;
