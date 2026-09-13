@@ -152,8 +152,26 @@ select.statut-select{border:1px solid var(--line-strong);border-radius:100px;pad
 table.lots{width:100%;border-collapse:collapse;font-size:13px;}
 table.lots th{text-align:left;font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-faint);padding:0 8px 6px;font-weight:600;}
 table.lots td{padding:4px 8px;border-top:1px solid var(--line);vertical-align:middle;}
-table.lots input{width:100%;border:1px solid var(--line-strong);border-radius:6px;padding:5px 7px;background:var(--surface-2);color:var(--ink);font-size:13px;}
+table.lots input,table.lots select{width:100%;border:1px solid var(--line-strong);border-radius:6px;padding:5px 7px;background:var(--surface-2);color:var(--ink);font-size:13px;}
 table.lots input.num-in{font-family:var(--mono);text-align:right;}
+
+.ws-tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);}
+.ws-tab{background:none;border:none;padding:9px 6px;font-family:var(--display);font-size:15.5px;font-weight:600;color:var(--ink-faint);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
+.ws-tab:hover{color:var(--ink-soft);}
+.ws-tab.active{color:var(--ink);border-bottom-color:var(--accent);}
+
+.piece-card{display:flex;flex-direction:column;gap:12px;}
+.piece-head{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:8px;border-bottom:1px solid var(--line);}
+.piece-name{font-family:var(--display);font-size:17px;font-weight:600;border:1px solid transparent;background:transparent;padding:3px 5px;border-radius:6px;color:var(--ink);flex:1;min-width:140px;}
+.piece-name:focus{border-color:var(--line-strong);background:var(--surface-2);}
+.subtable-label{font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-faint);margin-bottom:5px;}
+.piece-options{display:flex;gap:18px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-soft);}
+.piece-options label{display:flex;align-items:center;gap:6px;cursor:pointer;}
+.piece-result{display:flex;gap:8px;flex-wrap:wrap;padding-top:2px;}
+.stat-chip{background:var(--surface-2);border:1px solid var(--line);border-radius:7px;padding:6px 11px;font-size:12px;display:flex;flex-direction:column;gap:2px;min-width:108px;}
+.stat-chip .v{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--ink);}
+.stat-chip .k{color:var(--ink-faint);font-size:10px;text-transform:uppercase;letter-spacing:.03em;}
+.metre-row-actions{display:flex;align-items:center;gap:8px;}
 .lots-wrap{overflow-x:auto;}
 .lot-total{font-family:var(--mono);text-align:right;white-space:nowrap;color:var(--ink-soft);}
 .lot-rm{background:transparent;border:none;color:var(--ink-faint);cursor:pointer;font-size:15px;padding:4px 6px;border-radius:5px;}
@@ -314,7 +332,7 @@ function newChantier(numero){
     client:{nom:'',type:'syndic',contact:'',tel:'',email:''},
     adresse:'', dateVisite:'', description:'',
     lots:[], transport:0, locationDechets:0, provisionPct:3, margeCiblePct:20,
-    photos:[], notes:'',
+    photos:[], notes:'', pieces:[],
     validiteJours: state.settings.validiteJoursDefault||30,
     acomptePct: state.settings.acomptePctDefault||30,
     createdAt:now, updatedAt:now
@@ -327,6 +345,12 @@ function uid(){
   if(window.crypto && crypto.randomUUID) return crypto.randomUUID().slice(0,8);
   return 'l'+Math.random().toString(36).slice(2,10);
 }
+function newMur(){ return {id:uid(), label:'', hauteur:'', largeur:''}; }
+function newOuverture(){ return {id:uid(), type:'porte', largeur:0.83, hauteur:2.04, quantite:1}; }
+function newSolZone(){ return {id:uid(), longueur:'', largeur:''}; }
+function newPiece(nom){
+  return {id:uid(), nom:nom||'', murs:[newMur()], ouvertures:[], sol:[newSolZone()], plafond:true, doubleFace:false};
+}
 
 /* ---------------- state ---------------- */
 var state = {
@@ -335,6 +359,7 @@ var state = {
   chantiers: [],
   currentId: null,
   search:'', statusFilter:'tous',
+  wsTab:'devis',
   saveTimers:{}
 };
 
@@ -370,6 +395,7 @@ var Store = {
         }catch(e){}
       }
     }
+    state.chantiers.forEach(function(c){ c.pieces=c.pieces||[]; c.photos=c.photos||[]; c.lots=c.lots||[]; });
     if(state.chantiers.length===0){
       await Store.seedExample();
     }
@@ -421,6 +447,16 @@ var Store = {
     ];
     ex.transport=380; ex.locationDechets=220; ex.provisionPct=3; ex.margeCiblePct=20;
     ex.notes='Exemple fourni pour montrer le calcul — à modifier ou supprimer.';
+    ex.pieces=[Object.assign(newPiece('Bureau 1'),{
+      murs:[
+        Object.assign(newMur(),{label:'Mur 1',hauteur:2.5,largeur:6}),
+        Object.assign(newMur(),{label:'Mur 2',hauteur:2.5,largeur:4}),
+        Object.assign(newMur(),{label:'Mur 3',hauteur:2.5,largeur:6}),
+        Object.assign(newMur(),{label:'Mur 4',hauteur:2.5,largeur:4})
+      ],
+      ouvertures:[Object.assign(newOuverture(),{type:'porte',largeur:0.83,hauteur:2.04,quantite:1})],
+      sol:[Object.assign(newSolZone(),{longueur:6,largeur:4})]
+    })];
     await Store.saveChantier(ex);
     state.chantiers.unshift(ex);
   }
@@ -462,6 +498,33 @@ function allocateLotPrices(ch,totals){
     return {lot:l, prixVenteHT: alloue*scale};
   });
 }
+
+/* ---------------- calculateur de métré ---------------- */
+function computePiece(p){
+  var surfaceMursBrute=0, perimetre=0;
+  (p.murs||[]).forEach(function(m){ surfaceMursBrute += num(m.hauteur)*num(m.largeur); perimetre += num(m.largeur); });
+  var deductionSurface=0, deductionLineaire=0;
+  (p.ouvertures||[]).forEach(function(o){
+    deductionSurface += num(o.largeur)*num(o.hauteur)*num(o.quantite);
+    if(o.type==='porte') deductionLineaire += num(o.largeur)*num(o.quantite);
+  });
+  var surfaceMurs = Math.max(0, surfaceMursBrute-deductionSurface) * (p.doubleFace?2:1);
+  var lineaire = Math.max(0, perimetre-deductionLineaire);
+  var surfaceSol=0;
+  (p.sol||[]).forEach(function(z){ surfaceSol += num(z.longueur)*num(z.largeur); });
+  var surfacePlafond = p.plafond ? surfaceSol : 0;
+  return {surfaceMurs:surfaceMurs, lineaire:lineaire, surfaceSol:surfaceSol, surfacePlafond:surfacePlafond};
+}
+function computeMetreTotals(ch){
+  var t={peinture:0, plinthes:0, sol:0, plafond:0};
+  (ch.pieces||[]).forEach(function(p){
+    var r=computePiece(p);
+    t.peinture+=r.surfaceMurs; t.plinthes+=r.lineaire; t.sol+=r.surfaceSol; t.plafond+=r.surfacePlafond;
+  });
+  return t;
+}
+function m2(v){ return (Math.round(v*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' m²'; }
+function ml(v){ return (Math.round(v*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' ml'; }
 
 /* ---------------- rendering: sidebar ---------------- */
 function currentYearCount(){
@@ -551,7 +614,7 @@ function renderWorkspace(){
   var t = computeTotals(ch);
   var band = margeBand(t.tauxSurCA);
 
-  ws.innerHTML =
+  var headerHtml =
     '<div class="ws-header">'+
       '<div class="ws-header-left">'+
         '<div><div class="ws-num">'+esc(ch.numero)+(ch.isExample?' · exemple':'')+'</div><h2 class="ws-title" id="clientTitle">'+esc((ch.client&&ch.client.nom)||'Nouveau chantier')+'</h2></div>'+
@@ -562,7 +625,20 @@ function renderWorkspace(){
         '<button class="btn btn-ghost btn-sm" id="btnDelete">Supprimer</button>'+
       '</div>'+
     '</div>'+
+    '<div class="ws-tabs">'+
+      '<button type="button" class="ws-tab'+(state.wsTab==='devis'?' active':'')+'" data-wstab="devis">Devis</button>'+
+      '<button type="button" class="ws-tab'+(state.wsTab==='metre'?' active':'')+'" data-wstab="metre">Calculateur de métré</button>'+
+    '</div>';
 
+  if(state.wsTab==='metre'){
+    ws.innerHTML = headerHtml + buildMetreGridHtml(ch);
+    renderMetreRecap(ch);
+    bindMetreEvents(ch);
+    bindWsTabEvents(ch);
+    return;
+  }
+
+  ws.innerHTML = headerHtml +
     '<div class="ws-grid">'+
       '<div class="ws-main">'+
 
@@ -629,6 +705,15 @@ function renderWorkspace(){
 
   renderRecap(ch,t,band);
   bindWorkspaceEvents(ch);
+  bindWsTabEvents(ch);
+}
+function bindWsTabEvents(ch){
+  document.querySelectorAll('.ws-tab').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      state.wsTab = btn.getAttribute('data-wstab');
+      renderWorkspace();
+    });
+  });
 }
 
 function photoSrc(id){ return id.indexOf('data:')===0 ? id : '/_blob/'+id; }
@@ -864,6 +949,274 @@ function setPath(obj,path,value){
   var target=obj;
   for(var i=0;i<parts.length-1;i++){ target=target[parts[i]]; }
   target[parts[parts.length-1]]=value;
+}
+
+/* ---------------- métré: rendering ---------------- */
+function buildMetreGridHtml(ch){
+  var pieces=ch.pieces||[];
+  return '<div class="ws-grid">'+
+    '<div class="ws-main">'+
+      '<div class="card pad section">'+
+        '<div class="section-head"><h3>Métré du chantier</h3></div>'+
+        '<div class="section-hint">Mesurez chaque pièce une seule fois : les quantités de peinture, plinthes, sol et plafond se calculent automatiquement, prêtes à passer dans le devis.</div>'+
+      '</div>'+
+      (pieces.length ? pieces.map(pieceCardHtml).join('') : '<div class="card pad" style="text-align:center;color:var(--ink-faint);">Aucune pièce mesurée pour l’instant — ajoutez la première.</div>')+
+      '<div><button class="btn btn-ghost" id="btnAddPiece">+ Ajouter une pièce</button></div>'+
+    '</div>'+
+    '<div class="ws-side">'+
+      '<div class="card recap-card" id="metreRecapCard"></div>'+
+    '</div>'+
+  '</div>';
+}
+
+function pieceCardHtml(p){
+  return '<div class="card pad piece-card" id="piece-'+p.id+'" data-pieceid="'+p.id+'">'+
+    '<div class="piece-head">'+
+      '<input class="piece-name" data-pf="nom" value="'+esc(p.nom)+'" placeholder="Nom de la pièce (ex. Bureau 1)">'+
+      '<button class="btn btn-ghost btn-sm" data-rmpiece="'+p.id+'">Supprimer la pièce</button>'+
+    '</div>'+
+    '<div>'+
+      '<div class="subtable-label">Murs — hauteur × largeur</div>'+
+      '<div class="lots-wrap"><table class="lots" id="mursTable-'+p.id+'">'+mursTableInner(p)+'</table></div>'+
+      '<button class="btn btn-ghost btn-sm" data-addmur="'+p.id+'">+ Ajouter un mur</button>'+
+    '</div>'+
+    '<div>'+
+      '<div class="subtable-label">Portes / fenêtres à déduire</div>'+
+      '<div class="lots-wrap"><table class="lots" id="ouverturesTable-'+p.id+'">'+ouverturesTableInner(p)+'</table></div>'+
+      '<button class="btn btn-ghost btn-sm" data-addouv="'+p.id+'">+ Ajouter une ouverture</button>'+
+    '</div>'+
+    '<div>'+
+      '<div class="subtable-label">Surface au sol — longueur × largeur (une zone de plus pour une pièce en L)</div>'+
+      '<div class="lots-wrap"><table class="lots" id="solTable-'+p.id+'">'+solTableInner(p)+'</table></div>'+
+      '<button class="btn btn-ghost btn-sm" data-addzone="'+p.id+'">+ Ajouter une zone</button>'+
+    '</div>'+
+    '<div class="piece-options">'+
+      '<label><input type="checkbox" data-pf="plafond" '+(p.plafond?'checked':'')+'> Compter le plafond (surface identique au sol)</label>'+
+      '<label><input type="checkbox" data-pf="doubleFace" '+(p.doubleFace?'checked':'')+'> Cloison double face (× 2)</label>'+
+    '</div>'+
+    '<div class="piece-result" id="pieceResult-'+p.id+'">'+pieceResultHtml(p)+'</div>'+
+  '</div>';
+}
+function statChip(k,v){ return '<div class="stat-chip"><span class="k">'+k+'</span><span class="v">'+v+'</span></div>'; }
+function pieceResultHtml(p){
+  var r=computePiece(p);
+  return statChip('Peinture murs',m2(r.surfaceMurs))+statChip('Plinthes',ml(r.lineaire))+statChip('Sol',m2(r.surfaceSol))+statChip('Plafond', p.plafond?m2(r.surfacePlafond):'—');
+}
+function mursTableInner(p){
+  var head='<thead><tr><th class="col-designation">Mur</th><th class="col-num">Hauteur m</th><th class="col-num">Largeur m</th><th class="col-num">Surface</th><th></th></tr></thead>';
+  var rows=(p.murs||[]).map(function(m){
+    return '<tr data-murid="'+m.id+'">'+
+      '<td><input data-mf="label" value="'+esc(m.label)+'" placeholder="Mur 1"></td>'+
+      '<td><input class="num-in" data-mf="hauteur" type="number" step="0.01" value="'+esc(m.hauteur)+'"></td>'+
+      '<td><input class="num-in" data-mf="largeur" type="number" step="0.01" value="'+esc(m.largeur)+'"></td>'+
+      '<td class="lot-total" id="murSurf-'+m.id+'">'+m2(num(m.hauteur)*num(m.largeur))+'</td>'+
+      '<td><button class="lot-rm" data-rmmur="'+m.id+'" title="Supprimer le mur">🗑</button></td>'+
+    '</tr>';
+  }).join('');
+  if(!(p.murs||[]).length) rows='<tr><td colspan="5" style="padding:10px 8px;color:var(--ink-faint);">Aucun mur — ajoutez le premier.</td></tr>';
+  return head+'<tbody>'+rows+'</tbody>';
+}
+function ouverturesTableInner(p){
+  var head='<thead><tr><th class="col-designation">Type</th><th class="col-num">Largeur m</th><th class="col-num">Hauteur m</th><th class="col-unit">Qté</th><th class="col-num">Déduit</th><th></th></tr></thead>';
+  var rows=(p.ouvertures||[]).map(function(o){
+    return '<tr data-ouvid="'+o.id+'">'+
+      '<td><select data-of="type"><option value="porte"'+(o.type==='porte'?' selected':'')+'>Porte</option><option value="fenetre"'+(o.type==='fenetre'?' selected':'')+'>Fenêtre</option></select></td>'+
+      '<td><input class="num-in" data-of="largeur" type="number" step="0.01" value="'+num(o.largeur)+'"></td>'+
+      '<td><input class="num-in" data-of="hauteur" type="number" step="0.01" value="'+num(o.hauteur)+'"></td>'+
+      '<td><input class="num-in" data-of="quantite" type="number" step="1" value="'+num(o.quantite)+'"></td>'+
+      '<td class="lot-total" id="ouvSurf-'+o.id+'">'+m2(num(o.largeur)*num(o.hauteur)*num(o.quantite))+'</td>'+
+      '<td><button class="lot-rm" data-rmouv="'+o.id+'" title="Supprimer">🗑</button></td>'+
+    '</tr>';
+  }).join('');
+  if(!(p.ouvertures||[]).length) rows='<tr><td colspan="6" style="padding:10px 8px;color:var(--ink-faint);">Aucune ouverture à déduire.</td></tr>';
+  return head+'<tbody>'+rows+'</tbody>';
+}
+function solTableInner(p){
+  var head='<thead><tr><th class="col-designation">Zone</th><th class="col-num">Longueur m</th><th class="col-num">Largeur m</th><th class="col-num">Surface</th><th></th></tr></thead>';
+  var zones=p.sol||[];
+  var rows=zones.map(function(z,idx){
+    return '<tr data-zoneid="'+z.id+'">'+
+      '<td style="color:var(--ink-faint);">Zone '+(idx+1)+'</td>'+
+      '<td><input class="num-in" data-zf="longueur" type="number" step="0.01" value="'+esc(z.longueur)+'"></td>'+
+      '<td><input class="num-in" data-zf="largeur" type="number" step="0.01" value="'+esc(z.largeur)+'"></td>'+
+      '<td class="lot-total" id="zoneSurf-'+z.id+'">'+m2(num(z.longueur)*num(z.largeur))+'</td>'+
+      '<td>'+(zones.length>1?'<button class="lot-rm" data-rmzone="'+z.id+'" title="Supprimer">🗑</button>':'')+'</td>'+
+    '</tr>';
+  }).join('');
+  return head+'<tbody>'+rows+'</tbody>';
+}
+
+function renderMetreRecap(ch){
+  var el=document.getElementById('metreRecapCard');
+  if(!el) return;
+  var t=computeMetreTotals(ch);
+  function row(label,valueStr,key){
+    return '<div class="recap-row"><span class="k">'+label+'</span><span class="metre-row-actions"><span class="v">'+valueStr+'</span>'+
+      '<button type="button" class="btn btn-ghost btn-sm" data-sendlot="'+key+'">→ Devis</button></span></div>';
+  }
+  el.innerHTML =
+    '<div class="recap-title">Quantités totales du chantier</div>'+
+    row('Peinture (murs)', m2(t.peinture), 'peinture')+
+    row('Plinthes', ml(t.plinthes), 'plinthes')+
+    row('Sol', m2(t.sol), 'sol')+
+    row('Plafond', m2(t.plafond), 'plafond')+
+    '<div class="section-hint" style="margin:10px 0 0;">Chaque bouton crée un nouveau lot dans le devis avec la quantité mesurée — les prix restent à saisir.</div>';
+  el.querySelectorAll('[data-sendlot]').forEach(function(btn){
+    btn.addEventListener('click',function(){ sendMetreToLot(ch, btn.getAttribute('data-sendlot')); });
+  });
+}
+
+function sendMetreToLot(ch,key){
+  var t=computeMetreTotals(ch);
+  var map={
+    peinture:{designation:'Peinture murs et plafonds', quantite:t.peinture, unite:'m²'},
+    plinthes:{designation:'Plinthes', quantite:t.plinthes, unite:'ml'},
+    sol:{designation:'Revêtement de sol', quantite:t.sol, unite:'m²'},
+    plafond:{designation:'Faux plafond', quantite:t.plafond, unite:'m²'}
+  };
+  var cfg=map[key];
+  if(!cfg || cfg.quantite<=0) return;
+  var lot=newLot(cfg.designation);
+  lot.quantite=Math.round(cfg.quantite*100)/100;
+  lot.unite=cfg.unite;
+  ch.lots=ch.lots||[];
+  ch.lots.push(lot);
+  scheduleSave(ch);
+  state.wsTab='devis';
+  renderWorkspace();
+}
+
+/* ---------------- métré: bindings ---------------- */
+function bindMetreEvents(ch){
+  (ch.pieces||[]).forEach(function(p){ bindPieceEvents(ch,p); });
+  var addBtn=document.getElementById('btnAddPiece');
+  if(addBtn){
+    addBtn.onclick=function(){
+      ch.pieces=ch.pieces||[];
+      ch.pieces.push(newPiece('Pièce '+(ch.pieces.length+1)));
+      scheduleSave(ch);
+      renderWorkspace();
+    };
+  }
+}
+function patchPieceComputed(ch,p){
+  var res=document.getElementById('pieceResult-'+p.id);
+  if(res) res.innerHTML=pieceResultHtml(p);
+  renderMetreRecap(ch);
+}
+function bindPieceEvents(ch,p){
+  var card=document.getElementById('piece-'+p.id);
+  if(!card) return;
+  card.querySelectorAll('[data-pf]').forEach(function(inp){
+    var f=inp.getAttribute('data-pf');
+    var evt=(inp.type==='checkbox')?'change':'input';
+    inp.addEventListener(evt,function(){
+      p[f]=(inp.type==='checkbox')?inp.checked:inp.value;
+      patchPieceComputed(ch,p);
+      scheduleSave(ch);
+    });
+  });
+  bindMurRows(ch,p);
+  bindOuvRows(ch,p);
+  bindZoneRows(ch,p);
+  var addMurBtn=card.querySelector('[data-addmur]');
+  if(addMurBtn) addMurBtn.onclick=function(){
+    p.murs=p.murs||[]; p.murs.push(newMur());
+    document.getElementById('mursTable-'+p.id).innerHTML=mursTableInner(p);
+    bindMurRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+  };
+  var addOuvBtn=card.querySelector('[data-addouv]');
+  if(addOuvBtn) addOuvBtn.onclick=function(){
+    p.ouvertures=p.ouvertures||[]; p.ouvertures.push(newOuverture());
+    document.getElementById('ouverturesTable-'+p.id).innerHTML=ouverturesTableInner(p);
+    bindOuvRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+  };
+  var addZoneBtn=card.querySelector('[data-addzone]');
+  if(addZoneBtn) addZoneBtn.onclick=function(){
+    p.sol=p.sol||[]; p.sol.push(newSolZone());
+    document.getElementById('solTable-'+p.id).innerHTML=solTableInner(p);
+    bindZoneRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+  };
+  var rmPieceBtn=card.querySelector('[data-rmpiece]');
+  if(rmPieceBtn) rmPieceBtn.onclick=function(){
+    if(!confirm('Supprimer cette pièce du métré ?')) return;
+    ch.pieces=(ch.pieces||[]).filter(function(x){return x.id!==p.id;});
+    scheduleSave(ch);
+    renderWorkspace();
+  };
+}
+function bindMurRows(ch,p){
+  var table=document.getElementById('mursTable-'+p.id);
+  if(!table) return;
+  table.querySelectorAll('tr[data-murid]').forEach(function(row){
+    var id=row.getAttribute('data-murid');
+    var m=(p.murs||[]).filter(function(x){return x.id===id;})[0];
+    if(!m) return;
+    row.querySelectorAll('[data-mf]').forEach(function(inp){
+      var f=inp.getAttribute('data-mf');
+      inp.addEventListener('input',function(){
+        m[f]=inp.value;
+        var cell=document.getElementById('murSurf-'+id);
+        if(cell) cell.textContent=m2(num(m.hauteur)*num(m.largeur));
+        patchPieceComputed(ch,p); scheduleSave(ch);
+      });
+    });
+    var rm=row.querySelector('[data-rmmur]');
+    if(rm) rm.onclick=function(){
+      p.murs=p.murs.filter(function(x){return x.id!==id;});
+      table.innerHTML=mursTableInner(p);
+      bindMurRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+    };
+  });
+}
+function bindOuvRows(ch,p){
+  var table=document.getElementById('ouverturesTable-'+p.id);
+  if(!table) return;
+  table.querySelectorAll('tr[data-ouvid]').forEach(function(row){
+    var id=row.getAttribute('data-ouvid');
+    var o=(p.ouvertures||[]).filter(function(x){return x.id===id;})[0];
+    if(!o) return;
+    row.querySelectorAll('[data-of]').forEach(function(inp){
+      var f=inp.getAttribute('data-of');
+      var evt=(inp.tagName==='SELECT')?'change':'input';
+      inp.addEventListener(evt,function(){
+        o[f]=(f==='type')?inp.value:inp.value;
+        var cell=document.getElementById('ouvSurf-'+id);
+        if(cell) cell.textContent=m2(num(o.largeur)*num(o.hauteur)*num(o.quantite));
+        patchPieceComputed(ch,p); scheduleSave(ch);
+      });
+    });
+    var rm=row.querySelector('[data-rmouv]');
+    if(rm) rm.onclick=function(){
+      p.ouvertures=p.ouvertures.filter(function(x){return x.id!==id;});
+      table.innerHTML=ouverturesTableInner(p);
+      bindOuvRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+    };
+  });
+}
+function bindZoneRows(ch,p){
+  var table=document.getElementById('solTable-'+p.id);
+  if(!table) return;
+  table.querySelectorAll('tr[data-zoneid]').forEach(function(row){
+    var id=row.getAttribute('data-zoneid');
+    var z=(p.sol||[]).filter(function(x){return x.id===id;})[0];
+    if(!z) return;
+    row.querySelectorAll('[data-zf]').forEach(function(inp){
+      var f=inp.getAttribute('data-zf');
+      inp.addEventListener('input',function(){
+        z[f]=inp.value;
+        var cell=document.getElementById('zoneSurf-'+id);
+        if(cell) cell.textContent=m2(num(z.longueur)*num(z.largeur));
+        patchPieceComputed(ch,p); scheduleSave(ch);
+      });
+    });
+    var rm=row.querySelector('[data-rmzone]');
+    if(rm) rm.onclick=function(){
+      p.sol=p.sol.filter(function(x){return x.id!==id;});
+      table.innerHTML=solTableInner(p);
+      bindZoneRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
+    };
+  });
 }
 
 /* ---------------- print ---------------- */
@@ -1135,6 +1488,7 @@ async function createChantier(){
   await Store.saveChantier(ch);
   state.chantiers.unshift(ch);
   state.currentId=ch.id;
+  state.wsTab='devis';
   renderAll();
 }
 
@@ -1166,7 +1520,7 @@ document.addEventListener('click',function(e){
   var chip=e.target.closest('[data-filter]');
   if(chip){ state.statusFilter=chip.getAttribute('data-filter'); renderStatusChips(); renderChantierList(); return; }
   var item=e.target.closest('.chantier-item');
-  if(item){ state.currentId=item.getAttribute('data-id'); renderChantierList(); renderWorkspace(); }
+  if(item){ state.currentId=item.getAttribute('data-id'); state.wsTab='devis'; renderChantierList(); renderWorkspace(); }
 });
 
 Store.init().then(function(){
