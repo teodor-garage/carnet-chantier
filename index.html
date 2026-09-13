@@ -343,6 +343,8 @@ var STATUTS = [
 ];
 var UNITES = ['m²','ml','u','forfait','h'];
 var LOT_SUGGESTIONS = ['Peinture','Sol PVC / revêtement','Placo / cloison','Faux plafond','Plinthes','Nettoyage fin de chantier','Menuiserie légère','Petites réparations'];
+var CONSO_ENTREPRISE = ['Peinture','Sol PVC','Plinthes','Colle','Enduit','Abrasif / papier de verre','Ruban de masquage','Bâche de protection','Sous-couche / primaire','Joint / mastic'];
+var CONSO_SOUS_TRAITANT = ['Outillage','Échafaudage / escabeaux','Équipements de protection individuelle','Rouleaux','Pinceaux','Lames de cutter','Bâches et adhésifs de chantier','Consommables d’application'];
 
 /* ---------------- contrat de sous-traitance : clauses à cocher ----------
    Chaque clause optionnelle correspond à un article du contrat. Les
@@ -375,7 +377,7 @@ var CLAUSES_ST = [
 ];
 function defaultContratClauses(){
   var o={};
-  CLAUSES_ST.forEach(function(c){ o[c.key] = (c.key!=='declarationMO'); });
+  CLAUSES_ST.forEach(function(c){ o[c.key] = true; });
   return o;
 }
 function defaultContrat(){
@@ -1104,9 +1106,18 @@ function buildContratHtml(ch){
 
     '<div class="card pad section">'+
       '<div class="section-head"><span class="section-no">C</span><h3>Fournitures</h3></div>'+
+      '<div class="section-hint">Cliquez sur un consommable pour l’ajouter à la bonne liste, sans avoir à le retaper.</div>'+
       '<div class="field-grid">'+
-        '<div class="field span3"><label>Matériaux fournis par votre société</label><textarea id="ct_materiaux" placeholder="Ex. peinture, sol PVC, plinthes, colle…">'+esc(c.materiauxFournis)+'</textarea></div>'+
-        '<div class="field span3"><label>Matériel fourni par le sous-traitant</label><textarea id="ct_materiel" placeholder="Ex. outillage, échafaudage, EPI, consommables d’application…">'+esc(c.materielSousTraitant)+'</textarea></div>'+
+        '<div class="field span3">'+
+          '<label>Matériaux fournis par votre société</label>'+
+          '<textarea id="ct_materiaux" placeholder="Ex. peinture, sol PVC, plinthes, colle…">'+esc(c.materiauxFournis)+'</textarea>'+
+          '<div class="chips" style="margin-top:6px;">'+CONSO_ENTREPRISE.map(function(item){return '<button type="button" class="chip" data-addto="ct_materiaux" data-item="'+esc(item)+'">+ '+esc(item)+'</button>';}).join('')+'</div>'+
+        '</div>'+
+        '<div class="field span3">'+
+          '<label>Matériel fourni par le sous-traitant</label>'+
+          '<textarea id="ct_materiel" placeholder="Ex. outillage, échafaudage, EPI, consommables d’application…">'+esc(c.materielSousTraitant)+'</textarea>'+
+          '<div class="chips" style="margin-top:6px;">'+CONSO_SOUS_TRAITANT.map(function(item){return '<button type="button" class="chip" data-addto="ct_materiel" data-item="'+esc(item)+'">+ '+esc(item)+'</button>';}).join('')+'</div>'+
+        '</div>'+
       '</div>'+
     '</div>'+
 
@@ -1230,6 +1241,21 @@ function bindContratEvents(ch){
     if(!el) return;
     el.addEventListener('change',function(){
       c.clauses[cl.key]=el.checked;
+      renderContratRecap(ch);
+      scheduleSave(ch);
+    });
+  });
+
+  var CONSO_TARGET_PATH={ct_materiaux:'materiauxFournis', ct_materiel:'materielSousTraitant'};
+  document.querySelectorAll('[data-addto]').forEach(function(btn){
+    btn.addEventListener('click',function(){
+      var targetId=btn.getAttribute('data-addto'), item=btn.getAttribute('data-item');
+      var path=CONSO_TARGET_PATH[targetId];
+      var parts=String(c[path]||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
+      if(parts.indexOf(item)===-1) parts.push(item);
+      c[path]=parts.join(', ');
+      var ta=document.getElementById(targetId);
+      if(ta) ta.value=c[path];
       renderContratRecap(ch);
       scheduleSave(ch);
     });
@@ -2239,7 +2265,8 @@ function buildContratArticles(ch){
   }
   if(cl.assurances){
     art('Assurances et documents administratifs', [
-      'Avant le début du chantier, le Sous-traitant remet à l’Entreprise principale : un extrait Kbis ou justificatif d’immatriculation de moins de 3 mois, les attestations d’assurance (responsabilité civile professionnelle et, le cas échéant, garantie décennale) couvrant exactement les travaux à réaliser et en cours de validité, ainsi qu’un relevé d’identité bancaire (RIB).',
+      'Avant la signature du présent contrat ou, au plus tard, avant le démarrage du chantier, le Sous-traitant remet à l’Entreprise principale : un extrait Kbis ou justificatif d’immatriculation de moins de 3 mois, les attestations d’assurance (responsabilité civile professionnelle et, le cas échéant, garantie décennale) en cours de validité, ainsi qu’un relevé d’identité bancaire (RIB).',
+      'L’Entreprise principale vérifie que l’activité effectivement déclarée sur ces attestations correspond exactement à la nature des travaux exécutés en application du présent contrat. Toute non-conformité ou expiration de garantie constatée en cours de chantier suspend de plein droit l’intervention du Sous-traitant jusqu’à régularisation.',
       'Si le montant du présent contrat est égal ou supérieur à 5 000 € HT, le Sous-traitant fournit également une attestation de vigilance URSSAF de moins de 6 mois, conformément à l’article L. 8222-1 du Code du travail.'
     ]);
   }
@@ -2253,12 +2280,14 @@ function buildContratArticles(ch){
     art('Relation avec le client final', [
       'Toutes les demandes, réclamations ou modifications émanant du client final sont exclusivement traitées par l’Entreprise principale.',
       'Il est interdit au Sous-traitant de modifier directement les prestations avec le client, de négocier des prix avec lui, ou de réaliser des travaux supplémentaires qu’il lui aurait demandés directement, sans l’accord préalable de l’Entreprise principale.',
-      'Il est également interdit au Sous-traitant de communiquer au client le prix facturé par l’Entreprise principale à ce dernier.'
+      'Il est également interdit au Sous-traitant de communiquer au client le prix facturé par l’Entreprise principale à ce dernier.',
+      'Procédure applicable en cas de demande de travaux supplémentaires par le client : toute demande du client, quelle qu’en soit la nature, doit être transmise immédiatement par le Sous-traitant à '+ctBlank(s.nom)+', sans engagement de prix ni de délai de la part du Sous-traitant. Seule '+ctBlank(s.nom)+' est habilitée à valider, chiffrer et confier au Sous-traitant l’exécution de ces travaux supplémentaires, dans les conditions prévues à l’article « Suppléments et travaux imprévus ».'
     ]);
   }
   if(cl.nonSollicitation){
     art('Non-sollicitation de la clientèle', [
-      'Pendant la durée du présent contrat et pendant une durée de 12 mois suivant son terme, le Sous-traitant s’engage à ne pas démarcher directement, pour son propre compte ou celui d’un tiers, les clients que l’Entreprise principale lui a présentés dans le cadre de l’exécution du présent contrat.',
+      'Pendant la durée du présent contrat et pendant une durée de 12 mois suivant son terme, le Sous-traitant s’engage à ne pas démarcher, solliciter ou proposer ses services, directement ou indirectement, pour son propre compte ou celui d’un tiers, aux clients que l’Entreprise principale lui a présentés ou fait connaître dans le cadre de l’exécution du présent contrat.',
+      'Si un client ainsi présenté contacte directement le Sous-traitant, celui-ci s’engage à l’en informer sans délai et à le renvoyer vers '+ctBlank(s.nom)+', sans accepter ni exécuter, pour son propre compte, un chantier découlant de la relation commerciale créée par l’Entreprise principale, dans les limites admises par le droit de la concurrence.',
       'Cette clause, dont la portée doit rester proportionnée à l’objet du contrat, sera soumise pour validation à un juriste avant signature définitive.'
     ]);
   }
@@ -2305,7 +2334,9 @@ function buildContratArticles(ch){
   }
   if(cl.declarationMO){
     art('Déclaration au maître d’ouvrage', [
-      'Lorsque le marché principal l’exige, l’Entreprise principale procède à la déclaration de sous-traitance auprès du maître d’ouvrage préalablement au début d’intervention du Sous-traitant, conformément à la loi n°75-1334 du 31 décembre 1975.'
+      'Lorsque la réglementation applicable au marché principal l’impose — notamment dans le cadre d’un marché public ou de certains montages privés prévoyant le paiement direct du sous-traitant — l’Entreprise principale procède à la déclaration du Sous-traitant auprès du maître d’ouvrage préalablement au début de son intervention, conformément à la loi n°75-1334 du 31 décembre 1975 relative à la sous-traitance et, pour les marchés publics, aux dispositions du Code de la commande publique.',
+      'Cette déclaration inclut notamment l’identité du Sous-traitant, la nature et le montant des prestations sous-traitées, et les conditions de paiement le concernant. Le Sous-traitant s’engage à fournir sans délai tout document nécessaire à cette déclaration et à son agrément par le maître d’ouvrage lorsque celui-ci est requis.',
+      'Le Sous-traitant ne peut débuter son intervention avant que cette déclaration et, le cas échéant, son agrément par le maître d’ouvrage n’aient été obtenus, lorsque la réglementation applicable les exige.'
     ]);
   }
 
