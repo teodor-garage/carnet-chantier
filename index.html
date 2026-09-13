@@ -343,8 +343,32 @@ var STATUTS = [
 ];
 var UNITES = ['m²','ml','u','forfait','h'];
 var LOT_SUGGESTIONS = ['Peinture','Sol PVC / revêtement','Placo / cloison','Faux plafond','Plinthes','Nettoyage fin de chantier','Menuiserie légère','Petites réparations'];
-var CONSO_ENTREPRISE = ['Peinture','Sol PVC','Plinthes','Colle','Enduit','Abrasif / papier de verre','Ruban de masquage','Bâche de protection','Sous-couche / primaire','Joint / mastic'];
-var CONSO_SOUS_TRAITANT = ['Outillage','Échafaudage / escabeaux','Équipements de protection individuelle','Rouleaux','Pinceaux','Lames de cutter','Bâches et adhésifs de chantier','Consommables d’application'];
+/* Chaque consommable a un fournisseur par défaut (vous ou le sous-traitant),
+   modifiable par chantier — évite le flou qui génère des suppléments. */
+var FOURNITURE_ITEMS = [
+  {key:'peinture', label:'Peinture', owner:'entreprise'},
+  {key:'solPvc', label:'Sol PVC', owner:'entreprise'},
+  {key:'plinthes', label:'Plinthes', owner:'entreprise'},
+  {key:'colle', label:'Colle / adhésif de pose', owner:'entreprise'},
+  {key:'enduit', label:'Enduit / ragréage', owner:'entreprise'},
+  {key:'sousCouche', label:'Sous-couche / primaire', owner:'entreprise'},
+  {key:'joint', label:'Joint / mastic', owner:'entreprise'},
+  {key:'silicone', label:'Silicone', owner:'entreprise'},
+  {key:'seuils', label:'Seuils / barres de seuil', owner:'entreprise'},
+  {key:'abrasif', label:'Abrasifs / papier de verre', owner:'soustraitant'},
+  {key:'ruban', label:'Ruban de masquage', owner:'soustraitant'},
+  {key:'baches', label:'Bâches de protection', owner:'soustraitant'},
+  {key:'rouleaux', label:'Rouleaux et pinceaux', owner:'soustraitant'},
+  {key:'lames', label:'Lames de cutter / grattoirs', owner:'soustraitant'},
+  {key:'outillage', label:'Outillage et machines', owner:'soustraitant'},
+  {key:'echafaudage', label:'Échafaudage / escabeaux', owner:'soustraitant'},
+  {key:'epi', label:'Équipements de protection individuelle (EPI)', owner:'soustraitant'}
+];
+function defaultFournituresMap(){
+  var o={};
+  FOURNITURE_ITEMS.forEach(function(it){ o[it.key]=it.owner; });
+  return o;
+}
 
 /* ---------------- contrat de sous-traitance : clauses à cocher ----------
    Chaque clause optionnelle correspond à un article du contrat. Les
@@ -373,19 +397,21 @@ var CLAUSES_ST = [
   {key:'malfacons', label:'Malfaçons reprises aux frais du sous-traitant'},
   {key:'abandon', label:'Abandon de chantier et résiliation du contrat'},
   {key:'remplacement', label:'Remplacement par une autre entreprise en cas de défaillance grave'},
-  {key:'declarationMO', label:'Déclaration de la sous-traitance au maître d’ouvrage (marchés le nécessitant)'}
+  {key:'declarationMO', label:'Déclaration de la sous-traitance au maître d’ouvrage (marchés le nécessitant)'},
+  {key:'hierarchieDocuments', label:'Ordre de priorité des documents contractuels en cas de contradiction'}
 ];
 function defaultContratClauses(){
   var o={};
   CLAUSES_ST.forEach(function(c){ o[c.key] = true; });
   return o;
 }
-function defaultContrat(){
+function defaultContrat(ch){
   return {
     stNom:'', stForme:'', stSiret:'', stAdresse:'', stRepresentant:'', stTel:'', stEmail:'',
-    descriptionTravaux:'', materiauxFournis:'', materielSousTraitant:'',
-    dateDebut:'', dateFin:'', dureeMaxJours:'',
-    penaliteMontant:'',
+    descriptionTravaux:'', typePreparation:'', nombreCouches:'', deposeEventuelle:'',
+    materiauxFournis:'', materielSousTraitant:'', fournitures: defaultFournituresMap(),
+    dateDebut:'', dateFin: (ch&&ch.dateRendu)||'', dureeMaxJours:'',
+    penaliteMontant:'', penalitePlafondPct:10,
     horaires:'Du lundi au vendredi, 8h–17h, hors jours fériés.',
     contraintes:'',
     regimeTva:'autoliquidation',
@@ -395,8 +421,11 @@ function defaultContrat(){
   };
 }
 function getContrat(ch){
-  if(!ch.contrat) ch.contrat = defaultContrat();
-  else { ch.contrat.clauses = Object.assign(defaultContratClauses(), ch.contrat.clauses||{}); }
+  if(!ch.contrat) ch.contrat = defaultContrat(ch);
+  else {
+    ch.contrat.clauses = Object.assign(defaultContratClauses(), ch.contrat.clauses||{});
+    ch.contrat.fournitures = Object.assign(defaultFournituresMap(), ch.contrat.fournitures||{});
+  }
   return ch.contrat;
 }
 
@@ -1100,24 +1129,30 @@ function buildContratHtml(ch){
 
     '<div class="card pad section">'+
       '<div class="section-head"><span class="section-no">B</span><h3>Objet et description des travaux</h3></div>'+
-      '<div class="section-hint">Les métrés et lots du devis (onglet Devis) sont automatiquement repris en annexe du contrat.</div>'+
-      '<div class="field"><label>Description exacte des travaux sous-traités</label><textarea id="ct_description" placeholder="Ex. préparation des supports, peinture murs et plafonds, pose de sol PVC, pose de plinthes, nettoyage fin de chantier…">'+esc(c.descriptionTravaux)+'</textarea></div>'+
+      '<div class="section-hint">Les métrés du devis (murs, plafond, sol, plinthes) et les lots chiffrés sont automatiquement injectés dans l’article « Description des travaux » et répétés en Annexe 1 du contrat — inutile de les retaper.</div>'+
+      '<div class="field"><label>Description qualitative complémentaire (facultatif)</label><textarea id="ct_description" placeholder="Ex. peinture murs et plafonds, pose de sol PVC, pose de plinthes, nettoyage fin de chantier…">'+esc(c.descriptionTravaux)+'</textarea></div>'+
+      '<div class="field-grid">'+
+        '<div class="field"><label>Type de préparation des supports</label><input id="ct_typePreparation" value="'+esc(c.typePreparation)+'" placeholder="Ex. rebouchage, ponçage, impression"></div>'+
+        '<div class="field"><label>Nombre de couches</label><input id="ct_nombreCouches" value="'+esc(c.nombreCouches)+'" placeholder="Ex. 2 couches de peinture"></div>'+
+        '<div class="field"><label>Dépose éventuelle</label><input id="ct_deposeEventuelle" value="'+esc(c.deposeEventuelle)+'" placeholder="Ex. dépose ancien sol et plinthes"></div>'+
+      '</div>'+
     '</div>'+
 
     '<div class="card pad section">'+
       '<div class="section-head"><span class="section-no">C</span><h3>Fournitures</h3></div>'+
-      '<div class="section-hint">Cliquez sur un consommable pour l’ajouter à la bonne liste, sans avoir à le retaper.</div>'+
+      '<div class="section-hint">Qui fournit quoi, poste par poste — évite les suppléments liés à un consommable oublié. Valeurs par défaut modifiables.</div>'+
+      '<div class="lots-wrap"><table class="lots"><thead><tr><th class="col-designation">Élément</th><th class="col-num">Fourni par</th></tr></thead><tbody>'+
+        FOURNITURE_ITEMS.map(function(it){
+          var owner=c.fournitures[it.key]||it.owner;
+          return '<tr><td>'+esc(it.label)+'</td><td><select data-fourn="'+it.key+'">'+
+            '<option value="entreprise"'+(owner==='entreprise'?' selected':'')+'>Vous</option>'+
+            '<option value="soustraitant"'+(owner==='soustraitant'?' selected':'')+'>Sous-traitant</option>'+
+          '</select></td></tr>';
+        }).join('')+
+      '</tbody></table></div>'+
       '<div class="field-grid">'+
-        '<div class="field span3">'+
-          '<label>Matériaux fournis par votre société</label>'+
-          '<textarea id="ct_materiaux" placeholder="Ex. peinture, sol PVC, plinthes, colle…">'+esc(c.materiauxFournis)+'</textarea>'+
-          '<div class="chips" style="margin-top:6px;">'+CONSO_ENTREPRISE.map(function(item){return '<button type="button" class="chip" data-addto="ct_materiaux" data-item="'+esc(item)+'">+ '+esc(item)+'</button>';}).join('')+'</div>'+
-        '</div>'+
-        '<div class="field span3">'+
-          '<label>Matériel fourni par le sous-traitant</label>'+
-          '<textarea id="ct_materiel" placeholder="Ex. outillage, échafaudage, EPI, consommables d’application…">'+esc(c.materielSousTraitant)+'</textarea>'+
-          '<div class="chips" style="margin-top:6px;">'+CONSO_SOUS_TRAITANT.map(function(item){return '<button type="button" class="chip" data-addto="ct_materiel" data-item="'+esc(item)+'">+ '+esc(item)+'</button>';}).join('')+'</div>'+
-        '</div>'+
+        '<div class="field span3"><label>Autres matériaux fournis par vous (facultatif)</label><textarea id="ct_materiaux" placeholder="Tout élément non listé ci-dessus">'+esc(c.materiauxFournis)+'</textarea></div>'+
+        '<div class="field span3"><label>Autre matériel/consommable fourni par le sous-traitant (facultatif)</label><textarea id="ct_materiel" placeholder="Tout élément non listé ci-dessus">'+esc(c.materielSousTraitant)+'</textarea></div>'+
       '</div>'+
     '</div>'+
 
@@ -1147,6 +1182,7 @@ function buildContratHtml(ch){
         '<div class="field span3"><label>Horaires autorisés</label><textarea id="ct_horaires">'+esc(c.horaires)+'</textarea></div>'+
         '<div class="field span3"><label>Contraintes du chantier</label><textarea id="ct_contraintes" placeholder="Accès, copropriété, stationnement, bruit…">'+esc(c.contraintes)+'</textarea></div>'+
         '<div class="field"><label>Pénalité de retard (€/jour)</label><input class="num-in" id="ct_penalite" type="number" step="1" value="'+esc(c.penaliteMontant)+'"></div>'+
+        '<div class="field"><label>Plafond des pénalités (% du prix)</label><input class="num-in" id="ct_penalitePlafond" type="number" step="1" value="'+num(c.penalitePlafondPct)+'"></div>'+
       '</div>'+
     '</div>'+
 
@@ -1165,12 +1201,13 @@ function buildContratHtml(ch){
 
     '<div class="card pad section">'+
       '<div class="section-head"><span class="section-no">H</span><h3>Règlement des litiges</h3></div>'+
+      '<div class="section-hint">Laissez le tribunal vide : le contrat attribue alors automatiquement compétence au tribunal de commerce du siège de votre entreprise, une clause standard entre professionnels. Renseignez-le seulement si vous voulez désigner une autre juridiction.</div>'+
       '<div class="field-grid">'+
         '<div class="field span2"><label>Mode de règlement</label><select id="ct_modeLitige">'+
           '<option value="amiable_tribunal"'+(c.modeLitige==='amiable_tribunal'?' selected':'')+'>Résolution amiable puis tribunal compétent</option>'+
           '<option value="mediation"'+(c.modeLitige==='mediation'?' selected':'')+'>Résolution amiable puis médiation</option>'+
         '</select></div>'+
-        '<div class="field"><label>Tribunal compétent</label><input id="ct_tribunal" value="'+esc(c.tribunalCompetent)+'" placeholder="Ex. Tribunal de commerce de Paris"></div>'+
+        '<div class="field"><label>Tribunal compétent (facultatif)</label><input id="ct_tribunal" value="'+esc(c.tribunalCompetent)+'" placeholder="Ex. Tribunal de commerce de Paris"></div>'+
       '</div>'+
     '</div>'+
 
@@ -1225,9 +1262,10 @@ function bindContratEvents(ch){
   }
   [['ct_stNom','stNom'],['ct_stForme','stForme'],['ct_stSiret','stSiret'],['ct_stAdresse','stAdresse'],
    ['ct_stRepresentant','stRepresentant'],['ct_stTel','stTel'],['ct_stEmail','stEmail'],
-   ['ct_description','descriptionTravaux'],['ct_materiaux','materiauxFournis'],['ct_materiel','materielSousTraitant'],
+   ['ct_description','descriptionTravaux'],['ct_typePreparation','typePreparation'],['ct_nombreCouches','nombreCouches'],
+   ['ct_deposeEventuelle','deposeEventuelle'],['ct_materiaux','materiauxFournis'],['ct_materiel','materielSousTraitant'],
    ['ct_prix','prixForfaitaireHT'],['ct_dateDebut','dateDebut'],['ct_dateFin','dateFin'],['ct_dureeMax','dureeMaxJours'],
-   ['ct_penalite','penaliteMontant'],['ct_horaires','horaires'],['ct_contraintes','contraintes'],
+   ['ct_penalite','penaliteMontant'],['ct_penalitePlafond','penalitePlafondPct'],['ct_horaires','horaires'],['ct_contraintes','contraintes'],
    ['ct_acompteST','acomptePctST'],['ct_delaiPaiement','delaiPaiementJours'],['ct_tribunal','tribunalCompetent']
   ].forEach(function(pair){ bindText(pair[0],pair[1]); });
 
@@ -1246,17 +1284,9 @@ function bindContratEvents(ch){
     });
   });
 
-  var CONSO_TARGET_PATH={ct_materiaux:'materiauxFournis', ct_materiel:'materielSousTraitant'};
-  document.querySelectorAll('[data-addto]').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      var targetId=btn.getAttribute('data-addto'), item=btn.getAttribute('data-item');
-      var path=CONSO_TARGET_PATH[targetId];
-      var parts=String(c[path]||'').split(',').map(function(s){return s.trim();}).filter(Boolean);
-      if(parts.indexOf(item)===-1) parts.push(item);
-      c[path]=parts.join(', ');
-      var ta=document.getElementById(targetId);
-      if(ta) ta.value=c[path];
-      renderContratRecap(ch);
+  document.querySelectorAll('[data-fourn]').forEach(function(sel){
+    sel.addEventListener('change',function(){
+      c.fournitures[sel.getAttribute('data-fourn')]=sel.value;
       scheduleSave(ch);
     });
   });
@@ -2171,6 +2201,22 @@ async function downloadFacturePdf(ch){
    toujours inclus ; le reste dépend de ch.contrat.clauses. */
 function ctBlank(v){ var s2=(v==null?'':String(v)).trim(); return s2?s2:'......................'; }
 function ctDate(d){ return d ? new Date(d).toLocaleDateString('fr-FR') : '......................'; }
+/* Annexe 1 : répète les métrés et lots du devis directement dans le contrat
+   (au lieu d'un simple renvoi) pour éviter toute discussion ultérieure. */
+function buildAnnexeData(ch){
+  var mt=computeMetreTotals(ch);
+  var metreRows=[];
+  if(mt.peinture>0) metreRows.push(['Surface de murs (peinture)', m2(mt.peinture)]);
+  if(mt.plafond>0) metreRows.push(['Surface de plafond', m2(mt.plafond)]);
+  if(mt.sol>0) metreRows.push(['Surface de sol', m2(mt.sol)]);
+  if(mt.plinthes>0) metreRows.push(['Linéaire de plinthes', ml(mt.plinthes)]);
+  var lotRows=(ch.lots||[]).map(function(l){
+    var q = num(l.quantite);
+    var qtyStr = l.unite==='forfait' ? 'Forfait' : (q>0 ? q+' '+l.unite : '—');
+    return [l.designation||'—', qtyStr];
+  });
+  return {metreRows:metreRows, lotRows:lotRows};
+}
 function buildContratArticles(ch){
   var c=getContrat(ch), s=state.settings, t=computeTotals(ch), cl=c.clauses;
   var arts=[];
@@ -2182,17 +2228,36 @@ function buildContratArticles(ch){
   ]);
 
   var lotsListe=(ch.lots||[]).map(function(l){return l.designation;}).filter(Boolean).join(', ');
-  art('Description des travaux sous-traités', [
-    c.descriptionTravaux || ('Travaux de : '+(lotsListe||'......................')+'.'),
-    'Les quantités et métrés (surfaces de murs, de plafond, de sol, mètres linéaires de plinthes, nombre d’ouvertures, pièces concernées) figurant dans le devis et le calculateur de métré du chantier '+ctBlank(ch.numero)+' font partie intégrante du présent contrat.',
-    'Les photographies, relevés, plans et descriptifs transmis au Sous-traitant avant la signature font également partie intégrante du présent contrat et prévalent en cas de contestation sur l’état initial des lieux.'
-  ]);
+  var mt=computeMetreTotals(ch);
+  var quantParts=[];
+  if(mt.peinture>0) quantParts.push(m2(mt.peinture)+' de surface de murs');
+  if(mt.plafond>0) quantParts.push(m2(mt.plafond)+' de plafond');
+  if(mt.sol>0) quantParts.push(m2(mt.sol)+' de sol');
+  if(mt.plinthes>0) quantParts.push(ml(mt.plinthes)+' de plinthes');
+  var descParas=[c.descriptionTravaux || ('Travaux de : '+(lotsListe||'......................')+'.')];
+  descParas.push(quantParts.length
+    ? 'Les travaux portent précisément sur : '+quantParts.join(', ')+', selon le détail par pièce et par lot figurant à l’Annexe 1 (métrés et quantités) du présent contrat, qui en fait partie intégrante.'
+    : 'Le détail des quantités par lot figure à l’Annexe 1 (métrés et quantités) du présent contrat, qui en fait partie intégrante.');
+  var precisions=[];
+  if(c.typePreparation) precisions.push('préparation des supports : '+c.typePreparation);
+  if(c.nombreCouches) precisions.push('nombre de couches : '+c.nombreCouches);
+  if(c.deposeEventuelle) precisions.push('dépose : '+c.deposeEventuelle);
+  if(precisions.length) descParas.push('Précisions d’exécution — '+precisions.join(' ; ')+'.');
+  descParas.push('Les photographies, relevés, plans et descriptifs transmis au Sous-traitant avant la signature font également partie intégrante du présent contrat et prévalent en cas de contestation sur l’état initial des lieux.');
+  art('Description des travaux sous-traités', descParas);
 
   if(cl.fournitures){
-    art('Fourniture des matériaux et du matériel', [
-      'L’Entreprise principale fournit les matériaux suivants : '+ctBlank(c.materiauxFournis)+'.',
-      'Le Sous-traitant fournit, à ses frais, l’ensemble du matériel, de l’outillage, des machines, des équipements de protection individuelle et des consommables nécessaires à la bonne exécution des travaux, notamment : '+ctBlank(c.materielSousTraitant)+'.'
-    ]);
+    var byEntreprise=[], bySoustraitant=[];
+    FOURNITURE_ITEMS.forEach(function(it){
+      var owner=c.fournitures[it.key]||it.owner;
+      (owner==='entreprise'?byEntreprise:bySoustraitant).push(it.label);
+    });
+    var fournParas=[
+      'Sont fournis par l’Entreprise principale : '+(byEntreprise.length?byEntreprise.join(', '):'aucun élément listé')+(c.materiauxFournis?', ainsi que '+c.materiauxFournis:'')+'.',
+      'Sont fournis par le Sous-traitant, à ses frais : '+(bySoustraitant.length?bySoustraitant.join(', '):'aucun élément listé')+(c.materielSousTraitant?', ainsi que '+c.materielSousTraitant:'')+'.',
+      'Toute fourniture non répartie ci-dessus et nécessaire à l’exécution des travaux est réputée à la charge du Sous-traitant, sauf accord écrit contraire préalable.'
+    ];
+    art('Fourniture des matériaux et du matériel', fournParas);
   }
 
   var prix = c.prixForfaitaireHT!==''&&c.prixForfaitaireHT!=null ? num(c.prixForfaitaireHT) : t.coutSousTraitance;
@@ -2231,8 +2296,12 @@ function buildContratArticles(ch){
   }
   if(cl.penalites){
     var montantPenalite = c.penaliteMontant!==''&&c.penaliteMontant!=null ? eur(num(c.penaliteMontant)) : '......................';
+    var plafondPct = c.penalitePlafondPct!==''&&c.penalitePlafondPct!=null ? num(c.penalitePlafondPct) : 10;
+    var prixRefPenal = c.prixForfaitaireHT!==''&&c.prixForfaitaireHT!=null ? num(c.prixForfaitaireHT) : t.coutSousTraitance;
     art('Pénalités de retard', [
-      'En cas de non-respect de la date de fin ou de la durée maximale d’intervention fixée à l’article « Délais d’exécution », et passé un délai de tolérance de 5 jours calendaires, une pénalité de '+montantPenalite+' par jour calendaire de retard sera appliquée, sauf cas de force majeure, intempéries ou retard imputable à l’Entreprise principale ou à un tiers.'
+      'En cas de non-respect de la date de fin ou de la durée maximale d’intervention fixée à l’article « Délais d’exécution », et passé un délai de tolérance de 5 jours calendaires, une pénalité de '+montantPenalite+' par jour calendaire de retard sera appliquée.',
+      'Ces pénalités sont plafonnées à '+plafondPct+' % du prix forfaitaire HT prévu à l’article « Prix », soit un maximum de '+eur(prixRefPenal*plafondPct/100)+'.',
+      'Aucune pénalité n’est due en cas de force majeure, d’intempéries, ou de retard imputable à l’Entreprise principale, au client final ou à un tiers.'
     ]);
   }
   if(cl.qualite){
@@ -2253,8 +2322,8 @@ function buildContratArticles(ch){
   }
   if(cl.nettoyage){
     art('Nettoyage et gestion des déchets', [
-      'Le Sous-traitant nettoie quotidiennement sa zone d’intervention ainsi qu’en fin de chantier.',
-      'Sauf accord contraire écrit, il évacue à ses frais les gravats, emballages, chutes et anciens matériaux déposés résultant de son activité.'
+      'Le Sous-traitant nettoie quotidiennement sa zone d’intervention ainsi qu’en fin de chantier, et regroupe ses gravats, emballages, chutes et anciens matériaux déposés résultant de son activité dans un espace désigné à cet effet.',
+      'Sauf accord contraire écrit, l’évacuation de ces déchets est assurée par l’Entreprise principale.'
     ]);
   }
   if(cl.independance){
@@ -2287,8 +2356,7 @@ function buildContratArticles(ch){
   if(cl.nonSollicitation){
     art('Non-sollicitation de la clientèle', [
       'Pendant la durée du présent contrat et pendant une durée de 12 mois suivant son terme, le Sous-traitant s’engage à ne pas démarcher, solliciter ou proposer ses services, directement ou indirectement, pour son propre compte ou celui d’un tiers, aux clients que l’Entreprise principale lui a présentés ou fait connaître dans le cadre de l’exécution du présent contrat.',
-      'Si un client ainsi présenté contacte directement le Sous-traitant, celui-ci s’engage à l’en informer sans délai et à le renvoyer vers '+ctBlank(s.nom)+', sans accepter ni exécuter, pour son propre compte, un chantier découlant de la relation commerciale créée par l’Entreprise principale, dans les limites admises par le droit de la concurrence.',
-      'Cette clause, dont la portée doit rester proportionnée à l’objet du contrat, sera soumise pour validation à un juriste avant signature définitive.'
+      'Si un client ainsi présenté contacte directement le Sous-traitant, celui-ci s’engage à l’en informer sans délai et à le renvoyer vers '+ctBlank(s.nom)+', sans accepter ni exécuter, pour son propre compte, un chantier découlant de la relation commerciale créée par l’Entreprise principale, dans les limites admises par le droit de la concurrence.'
     ]);
   }
   if(cl.confidentialite){
@@ -2297,9 +2365,11 @@ function buildContratArticles(ch){
     ]);
   }
 
-  var regimeTxt = c.regimeTva==='autoliquidation'
-    ? 'Conformément à l’article 283, 2 nonies du Code général des impôts, la TVA due au titre des travaux sous-traités est autoliquidée par l’Entreprise principale ; le Sous-traitant facture donc hors taxes, en mentionnant « Autoliquidation ».'
-    : 'Le Sous-traitant facture ses prestations en appliquant son régime de TVA propre, à valider avec son comptable et celui de l’Entreprise principale.';
+  var regimeTxt = 'La facturation est établie conformément au régime de TVA légalement applicable, notamment au mécanisme d’autoliquidation prévu à l’article 283, 2 nonies du Code général des impôts lorsqu’il est applicable aux travaux sous-traités.'+
+    (c.regimeTva==='autoliquidation'
+      ? ' Sous cette réserve, les parties conviennent de l’application de ce mécanisme : le Sous-traitant facture hors taxes en faisant figurer la mention « Autoliquidation », l’Entreprise principale étant redevable de la taxe.'
+      : ' Le régime applicable au Sous-traitant sera confirmé au regard de sa situation propre, notamment en cas de franchise en base de TVA.')+
+    ' Ce point est validé par les experts-comptables respectifs des parties avant le début du chantier.';
   var factParas=[
     'Le Sous-traitant émet sa facture après achèvement des travaux et constat contradictoire de leur bonne exécution, sauf situation intermédiaire expressément prévue ci-après.',
     regimeTxt,
@@ -2329,7 +2399,15 @@ function buildContratArticles(ch){
   }
   if(cl.remplacement){
     art('Remplacement en cas de défaillance grave', [
-      'En cas de défaillance grave du Sous-traitant, l’Entreprise principale peut faire appel à une autre entreprise pour achever les travaux, aux frais du Sous-traitant défaillant, sans préjudice de toute action en réparation du préjudice subi.'
+      'En cas de défaillance grave du Sous-traitant — abandon de chantier, retard mettant manifestement en péril la date de fin contractuelle, malfaçons graves ou non-respect réitéré de ses obligations — et après mise en demeure restée infructueuse dans le délai qui y est fixé, l’Entreprise principale peut confier à une autre entreprise l’achèvement des travaux restant à réaliser ou la reprise des travaux non conformes.',
+      'Le surcoût de remplacement est calculé comme la différence, si elle est positive, entre le coût facturé par l’entreprise de remplacement pour les travaux non exécutés ou à reprendre et la part du prix forfaitaire restant due au Sous-traitant défaillant pour ces mêmes travaux. Il est établi sur présentation des devis et factures de l’entreprise de remplacement.',
+      'Ce surcoût est recouvré par déduction des sommes encore dues au Sous-traitant défaillant et, si celles-ci sont insuffisantes, par demande de paiement direct, sans préjudice d’une action en réparation de tout préjudice complémentaire subi par l’Entreprise principale.'
+    ]);
+  }
+  if(cl.hierarchieDocuments){
+    art('Ordre de priorité des documents contractuels', [
+      'En cas de contradiction ou de divergence entre les documents applicables au présent contrat, l’ordre de priorité suivant s’applique : 1° le corps du présent contrat ; 2° l’Annexe 1 (métrés et quantités du chantier) ; 3° le devis ou toute proposition tarifaire émise par le Sous-traitant ; 4° les plans, photographies et descriptifs transmis avant signature.',
+      'En cas de divergence entre deux documents, le document de rang supérieur prévaut sur le document de rang inférieur.'
     ]);
   }
   if(cl.declarationMO){
@@ -2340,9 +2418,12 @@ function buildContratArticles(ch){
     ]);
   }
 
-  var litigeTxt = c.modeLitige==='mediation'
-    ? 'En cas de différend, les parties s’engagent à rechercher une solution amiable avant toute saisine d’un médiateur. À défaut d’accord, le litige sera porté devant '+ctBlank(c.tribunalCompetent)+'.'
-    : 'En cas de différend, les parties s’engagent à rechercher une solution amiable. À défaut d’accord dans un délai raisonnable, le litige sera porté devant '+ctBlank(c.tribunalCompetent)+'.';
+  var tribunalTxt = (c.tribunalCompetent && c.tribunalCompetent.trim())
+    ? 'le Tribunal de commerce de '+c.tribunalCompetent.trim()
+    : 'le Tribunal de commerce du ressort du siège social de '+ctBlank(s.nom)+', y compris en cas de référé, de pluralité de défendeurs ou d’appel en garantie';
+  var litigeTxt = 'En cas de différend relatif à la formation, l’exécution ou l’interprétation du présent contrat, les parties, agissant en qualité de professionnels, s’engagent à rechercher une solution amiable.'+
+    (c.modeLitige==='mediation' ? ' À défaut d’accord amiable dans un délai de 30 jours, le différend pourra être soumis à un médiateur choisi d’un commun accord avant toute saisine judiciaire.' : '')+
+    ' À défaut d’accord, le litige relève de la compétence exclusive de '+tribunalTxt+'.';
   art('Droit applicable et règlement des litiges', [
     'Le présent contrat est soumis au droit français.',
     litigeTxt
@@ -2373,6 +2454,16 @@ function printContrat(ch){
         a.paragraphs.map(function(p){return '<p>'+esc(p)+'</p>';}).join('')+
       '</div>';
     }).join('')+
+    (function(){
+      var an=buildAnnexeData(ch);
+      if(!an.metreRows.length && !an.lotRows.length) return '';
+      return '<div class="ct-art"><h3>Annexe 1 — Métrés et quantités du chantier</h3>'+
+        (an.metreRows.length ? '<table class="ct-table"><thead><tr><th>Métrés globaux</th><th class="r">Quantité</th></tr></thead><tbody>'+
+          an.metreRows.map(function(r){return '<tr><td>'+esc(r[0])+'</td><td class="r">'+esc(r[1])+'</td></tr>';}).join('')+'</tbody></table>' : '')+
+        (an.lotRows.length ? '<table class="ct-table"><thead><tr><th>Lot / poste de travaux</th><th class="r">Quantité</th></tr></thead><tbody>'+
+          an.lotRows.map(function(r){return '<tr><td>'+esc(r[0])+'</td><td class="r">'+esc(r[1])+'</td></tr>';}).join('')+'</tbody></table>' : '')+
+      '</div>';
+    })()+
     '<div class="ct-sign">'+
       '<div><div style="font-size:10px;color:#777;">Fait à ……………………, le '+new Date().toLocaleDateString('fr-FR')+'</div><div class="sl">Signature de l’Entreprise principale<br>'+esc(s.nom||'')+'</div></div>'+
       '<div><div style="font-size:10px;color:#777;">Bon pour accord</div><div class="sl">Signature du Sous-traitant<br>'+esc(c.stNom||'')+'</div></div>'+
@@ -2437,6 +2528,33 @@ function buildContratPdf(ch){
     a.paragraphs.forEach(function(p){ paragraph(pdfSafe(p)); });
     y+=3;
   });
+
+  var an=buildAnnexeData(ch);
+  if(an.metreRows.length || an.lotRows.length){
+    doc.addPage(); y=M;
+    doc.setFont('helvetica','bold'); doc.setFontSize(13); setInk();
+    doc.text('ANNEXE 1 - METRES ET QUANTITES DU CHANTIER', pageW/2, y+4, {align:'center'});
+    y+=13;
+    function twoColRow(label,value){
+      ensureSpace(6);
+      doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setInk();
+      doc.text(pdfSafe(label), M, y);
+      doc.text(pdfSafe(value), pageW-M, y, {align:'right'});
+      y+=5.2;
+    }
+    if(an.metreRows.length){
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); setGray();
+      doc.text('METRES GLOBAUX', M, y); y+=5.5;
+      an.metreRows.forEach(function(r){ twoColRow(r[0], r[1]); });
+      y+=4;
+    }
+    if(an.lotRows.length){
+      ensureSpace(10);
+      doc.setFont('helvetica','bold'); doc.setFontSize(9); setGray();
+      doc.text('LOTS / POSTES DE TRAVAUX', M, y); y+=5.5;
+      an.lotRows.forEach(function(r){ twoColRow(r[0], r[1]); });
+    }
+  }
 
   ensureSpace(46);
   y+=6;
