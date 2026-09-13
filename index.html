@@ -109,6 +109,10 @@ a{color:var(--accent);}
 .badge-refuse{background:var(--bad-soft);color:var(--bad);border-color:var(--bad-line);}
 .badge-termine{background:var(--info-soft);color:var(--info);border-color:var(--info-line);}
 .badge-example{background:var(--accent-soft);color:var(--accent);border-color:var(--accent-line);}
+.badge-facture{background:var(--info-soft);color:var(--info);border-color:var(--info-line);font-family:var(--mono);text-transform:none;letter-spacing:0;}
+.badge-paiement{display:inline-flex;align-items:center;gap:4px;font-size:10.5px;font-weight:700;letter-spacing:.03em;text-transform:uppercase;border-radius:100px;padding:2px 8px;border:1px solid transparent;}
+.badge-paiement.attente{background:var(--warn-soft);color:var(--warn);border-color:var(--warn-line);}
+.badge-paiement.payee{background:var(--good-soft);color:var(--good);border-color:var(--good-line);}
 
 /* ---------- workspace ---------- */
 .workspace{min-width:0;display:flex;flex-direction:column;gap:14px;}
@@ -558,6 +562,38 @@ function nextNumero(){
   return 'DEV-'+y+'-'+String(n).padStart(3,'0');
 }
 
+/* ---------------- facturation ---------------- */
+function currentYearFactureCount(){
+  var y=new Date().getFullYear();
+  return state.chantiers.filter(function(c){return (c.factureNumero||'').indexOf('FAC-'+y)===0;}).length;
+}
+function nextNumeroFacture(){
+  var y=new Date().getFullYear();
+  var n=currentYearFactureCount()+1;
+  return 'FAC-'+y+'-'+String(n).padStart(3,'0');
+}
+/* Le devis se transforme en facture : numéro de facture définitif attribué une
+   seule fois (traçabilité légale), le reste reste modifiable. Idempotent. */
+function genererFacture(ch){
+  if(ch.factureNumero) return;
+  ch.factureNumero = nextNumeroFacture();
+  ch.factureDate = new Date().toISOString().slice(0,10);
+  ch.dateFinChantier = ch.dateFinChantier || ch.factureDate;
+  ch.factureDelaiJours = ch.factureDelaiJours!=null ? ch.factureDelaiJours : 30;
+  ch.factureAcompteRecu = ch.factureAcompteRecu!=null ? ch.factureAcompteRecu : (num(ch.acomptePct)>0);
+  ch.factureStatutPaiement = ch.factureStatutPaiement || 'attente';
+}
+function computeFactureTotals(ch){
+  var t=computeTotals(ch);
+  var tva = ch.tvaApplicable ? t.prixVente*(num(ch.tvaPct)/100) : 0;
+  var ttc = t.prixVente+tva;
+  var acompteHt = t.prixVente*(num(ch.acomptePct)/100);
+  var acompteTtc = ch.tvaApplicable ? acompteHt*(1+num(ch.tvaPct)/100) : acompteHt;
+  var acompteDeja = ch.factureAcompteRecu ? (ch.factureAcompteMontant!=null ? num(ch.factureAcompteMontant) : acompteTtc) : 0;
+  var netAPayer = ttc-acompteDeja;
+  return {ht:t.prixVente, tva:tva, ttc:ttc, acompteSuggere:acompteTtc, acompteDeja:acompteDeja, netAPayer:netAPayer};
+}
+
 function renderKpis(){
   var el=document.getElementById('kpis');
   var thisMonth = new Date().toISOString().slice(0,7);
@@ -602,6 +638,7 @@ function renderChantierList(){
       '<div class="ci-top"><span class="ci-client">'+esc((c.client&&c.client.nom)||'Sans nom')+'</span><span class="ci-num">'+esc(c.numero||'')+'</span></div>'+
       '<div class="ci-bottom">'+
         '<span class="badge badge-'+c.statut+'">'+statutLabel+'</span>'+
+        (c.factureNumero?'<span class="badge badge-facture">'+esc(c.factureNumero)+'</span>':'')+
         (c.isExample?'<span class="badge badge-example">Exemple</span>':'')+
         '<span class="ci-amount">'+eur0(t.prixVente)+'</span>'+
       '</div>'+
@@ -649,8 +686,15 @@ function renderWorkspace(){
     '<div class="ws-tabs">'+
       '<button type="button" class="ws-tab'+(state.wsTab==='devis'?' active':'')+'" data-wstab="devis">Devis</button>'+
       '<button type="button" class="ws-tab'+(state.wsTab==='metre'?' active':'')+'" data-wstab="metre">Calculateur de métré</button>'+
+      ((ch.statut==='termine'||ch.factureNumero)?'<button type="button" class="ws-tab'+(state.wsTab==='facture'?' active':'')+'" data-wstab="facture">Facture'+(ch.factureNumero?' · '+esc(ch.factureNumero):'')+'</button>':'')+
     '</div>';
 
+  if(state.wsTab==='facture' && (ch.statut==='termine'||ch.factureNumero)){
+    ws.innerHTML = headerHtml + buildFactureHtml(ch);
+    bindFactureEvents(ch);
+    bindWsTabEvents(ch);
+    return;
+  }
   if(state.wsTab==='metre'){
     ws.innerHTML = headerHtml + buildMetreGridHtml(ch);
     renderMetreRecap(ch);
@@ -818,6 +862,118 @@ function patchComputed(ch){
   });
 }
 
+/* ---------------- rendering: facture ---------------- */
+function buildFactureHtml(ch){
+  if(!ch.factureNumero){
+    return '<div class="card pad section">'+
+      '<div class="section-head"><span class="section-no">F</span><h3>Facture</h3></div>'+
+      '<div class="section-hint">Ce chantier est terminé mais n’a pas encore de numéro de facture.</div>'+
+      '<div><button class="btn btn-accent" id="btnGenFacture">Générer la facture</button></div>'+
+    '</div>';
+  }
+  var ft=computeFactureTotals(ch);
+  return '<div class="ws-grid">'+
+    '<div class="ws-main">'+
+      '<div class="card pad section">'+
+        '<div class="section-head"><span class="section-no">F</span><h3>Facture '+esc(ch.factureNumero)+'</h3></div>'+
+        '<div class="section-hint">Générée automatiquement à partir du devis lors du passage au statut « Terminé ». Le numéro est définitif ; les montants suivent les lots du devis.</div>'+
+        '<div class="field-grid">'+
+          '<div class="field"><label>Date d’émission</label><input type="date" id="fa_date" value="'+esc(ch.factureDate||'')+'"></div>'+
+          '<div class="field"><label>Date de fin de chantier</label><input type="date" id="fa_datefin" value="'+esc(ch.dateFinChantier||'')+'"></div>'+
+          '<div class="field"><label>Délai de paiement (jours)</label><input class="num-in" id="fa_delai" type="number" step="1" value="'+num(ch.factureDelaiJours)+'"></div>'+
+          '<div class="field"><label>Statut de paiement</label><select id="fa_statutpaiement">'+
+            '<option value="attente"'+(ch.factureStatutPaiement!=='payee'?' selected':'')+'>En attente</option>'+
+            '<option value="payee"'+(ch.factureStatutPaiement==='payee'?' selected':'')+'>Payée</option>'+
+          '</select></div>'+
+          (ch.factureStatutPaiement==='payee'?'<div class="field"><label>Date de paiement</label><input type="date" id="fa_datepaiement" value="'+esc(ch.facturePaiementDate||'')+'"></div>':'')+
+        '</div>'+
+        '<div class="field-grid">'+
+          '<div class="field span3"><div class="toggle-row"><label>Acompte déjà perçu à la signature</label><input type="checkbox" id="fa_acompteRecu" '+(ch.factureAcompteRecu?'checked':'')+'></div></div>'+
+          (ch.factureAcompteRecu?'<div class="field span3"><label>Montant de l’acompte déjà perçu (€ TTC)</label><input class="num-in" id="fa_acompteMontant" type="number" step="1" value="'+(ch.factureAcompteMontant!=null?num(ch.factureAcompteMontant):Math.round(ft.acompteSuggere))+'"></div>':'')+
+        '</div>'+
+      '</div>'+
+      '<div class="card pad section">'+
+        '<div class="section-head"><span class="section-no">F</span><h3>Facture récapitulative</h3></div>'+
+        '<div class="section-hint">Document à envoyer au client — mêmes lots et prix que le devis.</div>'+
+        '<div class="print-actions">'+
+          '<button class="btn btn-accent" id="btnDownloadFacturePdf">Télécharger la facture (PDF)</button>'+
+          '<button class="btn btn-ghost" id="btnPrintFacture">Aperçu / Imprimer</button>'+
+          ((state.downloadsApi||!window.claude)?'':'<span class="offline-note" style="align-self:center;">Téléchargement PDF indisponible ici — utilisez Imprimer → Enregistrer au format PDF.</span>')+
+        '</div>'+
+      '</div>'+
+    '</div>'+
+    '<div class="ws-side"><div class="card recap-card" id="factureRecapCard"></div></div>'+
+  '</div>';
+}
+function renderFactureRecap(ch){
+  var card=document.getElementById('factureRecapCard');
+  if(!card) return;
+  var ft=computeFactureTotals(ch);
+  card.innerHTML =
+    '<div class="recap-title">Facture</div>'+
+    '<div class="recap-row"><span class="k">Total HT</span><span class="v">'+eur(ft.ht)+'</span></div>'+
+    (ch.tvaApplicable?'<div class="recap-row"><span class="k">TVA ('+num(ch.tvaPct)+'%)</span><span class="v">'+eur(ft.tva)+'</span></div>':'<div class="recap-row sub"><span class="k">TVA</span><span class="v">non applicable</span></div>')+
+    '<div class="recap-row"><span class="k">Total TTC</span><span class="v">'+eur(ft.ttc)+'</span></div>'+
+    (ft.acompteDeja>0?'<div class="recap-row sub"><span class="k">Acompte déjà perçu</span><span class="v">-'+eur(ft.acompteDeja)+'</span></div>':'')+
+    '<div class="recap-total"><span class="k">Net à payer</span><span class="v">'+eur0(ft.netAPayer)+'</span></div>'+
+    '<div class="badge-paiement '+(ch.factureStatutPaiement==='payee'?'payee':'attente')+'" style="margin-top:12px;display:inline-flex;">'+(ch.factureStatutPaiement==='payee'?'Payée':'En attente de paiement')+'</div>';
+}
+function patchFactureComputed(ch){ renderFactureRecap(ch); }
+function bindFactureEvents(ch){
+  var genBtn=document.getElementById('btnGenFacture');
+  if(genBtn){
+    genBtn.onclick=function(){
+      genererFacture(ch);
+      scheduleSave(ch);
+      renderWorkspace();
+    };
+    return;
+  }
+  function bindText(id,path){
+    var el=document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input',function(){ setPath(ch,path,el.value); scheduleSave(ch); });
+  }
+  bindText('fa_date','factureDate');
+  bindText('fa_datefin','dateFinChantier');
+  bindText('fa_delai','factureDelaiJours');
+  bindText('fa_datepaiement','facturePaiementDate');
+
+  var acompteChk=document.getElementById('fa_acompteRecu');
+  if(acompteChk){
+    acompteChk.addEventListener('change',function(){
+      ch.factureAcompteRecu=acompteChk.checked;
+      scheduleSave(ch);
+      renderWorkspace();
+    });
+  }
+  var acompteMontant=document.getElementById('fa_acompteMontant');
+  if(acompteMontant){
+    acompteMontant.addEventListener('input',function(){
+      ch.factureAcompteMontant = acompteMontant.value===''?0:parseFloat(acompteMontant.value);
+      patchFactureComputed(ch);
+      scheduleSave(ch);
+    });
+  }
+  var statutPaiementEl=document.getElementById('fa_statutpaiement');
+  if(statutPaiementEl){
+    statutPaiementEl.addEventListener('change',function(){
+      ch.factureStatutPaiement=statutPaiementEl.value;
+      if(ch.factureStatutPaiement==='payee' && !ch.facturePaiementDate){
+        ch.facturePaiementDate = new Date().toISOString().slice(0,10);
+      }
+      scheduleSave(ch);
+      renderWorkspace();
+    });
+  }
+
+  renderFactureRecap(ch);
+
+  document.getElementById('btnPrintFacture').onclick=function(){ printFacture(ch); };
+  var pdfBtn=document.getElementById('btnDownloadFacturePdf');
+  if(pdfBtn){ pdfBtn.onclick=function(){ downloadFacturePdf(ch); }; }
+}
+
 /* ---------------- events ---------------- */
 function scheduleSave(ch){
   var el=document.getElementById('saveState');
@@ -890,7 +1046,12 @@ function bindWorkspaceEvents(ch){
   if(statutEl){
     statutEl.addEventListener('change',function(){
       ch.statut=statutEl.value;
+      if(ch.statut==='termine' && !ch.factureNumero){
+        genererFacture(ch);
+        state.wsTab='facture';
+      }
       scheduleSave(ch);
+      renderWorkspace();
     });
   }
 
@@ -1300,6 +1461,62 @@ function printDevis(ch){
   window.print();
 }
 
+function printFacture(ch){
+  if(!ch.factureNumero) return;
+  var t=computeTotals(ch);
+  var alloc=allocateLotPrices(ch,t);
+  var ft=computeFactureTotals(ch);
+  var s=state.settings;
+  var dateStr = ch.factureDate ? new Date(ch.factureDate).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
+  var echeance = new Date(ch.factureDate||new Date());
+  echeance.setDate(echeance.getDate()+(num(ch.factureDelaiJours)||30));
+  var rows = alloc.map(function(a){
+    var l=a.lot;
+    var qte = num(l.quantite);
+    var unitPrice = qte>0 ? a.prixVenteHT/qte : null;
+    return '<tr><td>'+esc(l.designation||'—')+'</td><td class="r">'+(qte>0?qte:'')+' '+esc(l.unite==='forfait'?'':l.unite)+'</td>'+
+      '<td class="r">'+(unitPrice!==null?eur(unitPrice):'forfait')+'</td>'+
+      '<td class="r">'+eur(a.prixVenteHT)+'</td></tr>';
+  }).join('');
+
+  var html =
+    '<div class="psheet">'+
+      '<div class="ps-top">'+
+        '<div class="ps-company"><h2>'+esc(s.nom||'Votre entreprise')+'</h2>'+
+          (s.forme?esc(s.forme)+'<br>':'')+ (s.siret?'SIRET '+esc(s.siret)+'<br>':'') +
+          (s.adresse?esc(s.adresse)+'<br>':'') + [s.tel,s.email].filter(Boolean).map(esc).join(' · ') +
+        '</div>'+
+        '<div class="ps-meta"><div class="big">FACTURE '+esc(ch.factureNumero)+'</div>Date d’émission : '+dateStr+'<br>Échéance : '+echeance.toLocaleDateString('fr-FR')+
+          (ch.factureStatutPaiement==='payee'?'<br><span style="color:#2f7d4f;font-weight:700;">PAYÉE'+(ch.facturePaiementDate?' le '+new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR'):'')+'</span>':'')+
+        '</div>'+
+      '</div>'+
+      '<div class="ps-block"><div class="ps-label">Client</div>'+esc(ch.client.nom)+'<br>'+esc(ch.adresse)+
+        (ch.client.contact?'<br>À l’attention de '+esc(ch.client.contact):'')+
+      '</div>'+
+      '<div class="ps-block"><div class="ps-label">Objet</div>'+esc(ch.description||'Travaux de rénovation intérieure')+
+        (ch.dateFinChantier?' — travaux achevés le '+new Date(ch.dateFinChantier).toLocaleDateString('fr-FR'):'')+
+      '</div>'+
+      '<table class="ps-table"><thead><tr><th>Désignation</th><th class="r">Quantité</th><th class="r">Prix unitaire HT</th><th class="r">Total HT</th></tr></thead>'+
+      '<tbody>'+rows+'</tbody></table>'+
+      '<div class="ps-totals">'+
+        '<div class="row"><span>Total HT</span><span class="num">'+eur(ft.ht)+'</span></div>'+
+        (ch.tvaApplicable?'<div class="row"><span>TVA ('+num(ch.tvaPct)+'%)</span><span class="num">'+eur(ft.tva)+'</span></div>':'')+
+        '<div class="row"><span>Total '+(ch.tvaApplicable?'TTC':'HT')+'</span><span class="num">'+eur(ft.ttc)+'</span></div>'+
+        (ft.acompteDeja>0?'<div class="row"><span>Acompte déjà perçu</span><span class="num">-'+eur(ft.acompteDeja)+'</span></div>':'')+
+        '<div class="row grand"><span>Net à payer</span><span class="num">'+eur(ft.netAPayer)+'</span></div>'+
+      '</div>'+
+      '<div class="ps-cond">'+
+        (!ch.tvaApplicable?'TVA non applicable, art. 293 B du CGI.<br>':'')+
+        'Paiement à réception, sous '+(num(ch.factureDelaiJours)||30)+' jours à compter de la date d’émission.<br>'+
+        (s.iban?'Règlement par virement — IBAN '+esc(s.iban)+(s.bic?' · BIC '+esc(s.bic):'')+'.<br>':'')+
+        'Escompte pour paiement anticipé : néant.<br>'+
+        esc(s.mentionRetard)+
+      '</div>'+
+    '</div>';
+  document.getElementById('printSheet').innerHTML=html;
+  window.print();
+}
+
 /* ---------------- pdf export ---------------- */
 function buildDevisPdf(ch,totalsForPdf,alloc){
   var jsPDFCtor = window.jspdf && window.jspdf.jsPDF;
@@ -1458,6 +1675,165 @@ async function downloadPdf(ch){
     else { alert('Enregistrement impossible : '+((e&&e.message)||'erreur inconnue')); if(btn) btn.textContent='Télécharger le devis (PDF)'; }
   } finally {
     if(btn){ setTimeout(function(){ btn.disabled=false; if(btn.textContent.indexOf('✓')>-1) btn.textContent='Télécharger le devis (PDF)'; },2200); }
+  }
+}
+
+function buildFacturePdf(ch,ft,alloc){
+  var jsPDFCtor = window.jspdf && window.jspdf.jsPDF;
+  if(!jsPDFCtor) return null;
+  var s = state.settings;
+  var doc = new jsPDFCtor({unit:'mm',format:'a4'});
+  var M=18, pageW=210, pageH=297, contentW=pageW-M*2;
+  var ink=[26,26,26], gray=[100,100,100], lightline=[205,205,205], accent=[217,89,28], good=[47,125,79];
+  var y=M;
+
+  function setInk(){ doc.setTextColor(ink[0],ink[1],ink[2]); }
+  function setGray(){ doc.setTextColor(gray[0],gray[1],gray[2]); }
+  function hr(c,w){ doc.setDrawColor(c[0],c[1],c[2]); doc.setLineWidth(w||0.3); doc.line(M,y,pageW-M,y); }
+  function ensureSpace(minH,onBreak){
+    if(y > pageH-M-minH){ doc.addPage(); y=M; if(onBreak) onBreak(); return true; }
+    return false;
+  }
+
+  var echeance = new Date(ch.factureDate||new Date());
+  echeance.setDate(echeance.getDate()+(num(ch.factureDelaiJours)||30));
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(17); setInk();
+  doc.text(pdfSafe(s.nom||'Votre entreprise'), M, y+4);
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); setGray();
+  var hLines=[];
+  if(s.forme) hLines.push(pdfSafe(s.forme));
+  if(s.siret) hLines.push('SIRET '+pdfSafe(s.siret));
+  if(s.adresse) hLines.push(pdfSafe(s.adresse));
+  var contactLine=[s.tel,s.email].filter(Boolean).map(pdfSafe).join('   -   ');
+  if(contactLine) hLines.push(contactLine);
+  var hy=y+10;
+  hLines.forEach(function(l){ doc.text(l,M,hy); hy+=4.2; });
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(13); setInk();
+  doc.text('FACTURE '+(ch.factureNumero||''), pageW-M, y+4, {align:'right'});
+  doc.setFont('helvetica','normal'); doc.setFontSize(9); setGray();
+  var dateStr = ch.factureDate ? new Date(ch.factureDate).toLocaleDateString('fr-FR') : new Date().toLocaleDateString('fr-FR');
+  doc.text('Date d\'emission : '+dateStr, pageW-M, y+10, {align:'right'});
+  doc.text('Echeance : '+echeance.toLocaleDateString('fr-FR'), pageW-M, y+14.2, {align:'right'});
+  if(ch.factureStatutPaiement==='payee'){
+    doc.setFont('helvetica','bold'); doc.setTextColor(good[0],good[1],good[2]);
+    doc.text('PAYEE'+(ch.facturePaiementDate?(' le '+new Date(ch.facturePaiementDate).toLocaleDateString('fr-FR')):''), pageW-M, y+18.4, {align:'right'});
+  }
+
+  y = Math.max(hy, y+18)+4;
+  hr(accent,0.9); y+=8;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); setGray();
+  doc.text('CLIENT', M, y); y+=5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(11); setInk();
+  doc.text(pdfSafe(ch.client.nom)||'-', M, y); y+=5.2;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setGray();
+  if(ch.adresse){ doc.text(pdfSafe(ch.adresse), M, y); y+=4.6; }
+  if(ch.client.contact){ doc.text('A l\'attention de '+pdfSafe(ch.client.contact), M, y); y+=4.6; }
+  y+=3;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(8); setGray();
+  doc.text('OBJET', M, y); y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setInk();
+  var objetTxt = pdfSafe(ch.description||'Travaux de rénovation intérieure') + (ch.dateFinChantier ? ' - travaux acheves le '+new Date(ch.dateFinChantier).toLocaleDateString('fr-FR') : '');
+  doc.splitTextToSize(objetTxt, contentW).forEach(function(l){ doc.text(l,M,y); y+=4.6; });
+  y+=4;
+
+  function tableHeader(){
+    doc.setFont('helvetica','bold'); doc.setFontSize(8.3); setGray();
+    doc.text('DÉSIGNATION', M, y);
+    doc.text('QUANTITÉ', M+100, y, {align:'right'});
+    doc.text('PRIX UNIT. HT', M+140, y, {align:'right'});
+    doc.text('TOTAL HT', pageW-M, y, {align:'right'});
+    y+=2.5; hr(ink,0.4); y+=5;
+  }
+  tableHeader();
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5);
+  (alloc||[]).forEach(function(a){
+    ensureSpace(22, tableHeader);
+    var l=a.lot; var qte=num(l.quantite);
+    var unitPrice = qte>0 ? a.prixVenteHT/qte : null;
+    setInk();
+    var nameLines=doc.splitTextToSize(pdfSafe(l.designation)||'-', 88);
+    doc.text(nameLines, M, y);
+    setGray();
+    doc.text(qte>0 ? (qte+' '+(l.unite==='forfait'?'':l.unite==='m²'?'m2':l.unite)) : (l.unite==='forfait'?'forfait':'—'), M+100, y, {align:'right'});
+    doc.text(unitPrice!==null ? eurPdf(unitPrice) : '—', M+140, y, {align:'right'});
+    setInk();
+    doc.text(eurPdf(a.prixVenteHT), pageW-M, y, {align:'right'});
+    var rowH=Math.max(nameLines.length*4.4, 5.5);
+    y+=rowH;
+    hr(lightline,0.2); y+=2.8;
+  });
+
+  y+=3;
+  ensureSpace(52);
+  var boxX=pageW-M-72;
+  doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setInk();
+  doc.text('Total HT', boxX, y); doc.text(eurPdf(ft.ht), pageW-M, y, {align:'right'}); y+=5.5;
+  if(ch.tvaApplicable){
+    doc.text('TVA ('+num(ch.tvaPct)+'%)', boxX, y); doc.text(eurPdf(ft.tva), pageW-M, y, {align:'right'}); y+=5.5;
+  }
+  doc.text('Total '+(ch.tvaApplicable?'TTC':'HT'), boxX, y); doc.text(eurPdf(ft.ttc), pageW-M, y, {align:'right'}); y+=5.5;
+  if(ft.acompteDeja>0){
+    doc.text('Acompte déjà perçu', boxX, y); doc.text('-'+eurPdf(ft.acompteDeja), pageW-M, y, {align:'right'}); y+=5.5;
+  }
+  doc.setDrawColor(ink[0],ink[1],ink[2]); doc.setLineWidth(0.5); doc.line(boxX,y,pageW-M,y); y+=5.5;
+  doc.setFont('helvetica','bold'); doc.setFontSize(12);
+  doc.text('Net à payer', boxX, y);
+  doc.text(eurPdf(ft.netAPayer), pageW-M, y, {align:'right'});
+  y+=11;
+
+  ensureSpace(34);
+  hr(lightline,0.3); y+=5;
+  doc.setFont('helvetica','normal'); doc.setFontSize(8.3); setGray();
+  var condTexts=[];
+  if(!ch.tvaApplicable) condTexts.push('TVA non applicable, art. 293 B du CGI.');
+  condTexts.push('Paiement a reception, sous '+(num(ch.factureDelaiJours)||30)+' jours a compter de la date d\'emission.');
+  if(s.iban) condTexts.push('Reglement par virement - IBAN '+s.iban+(s.bic?' - BIC '+s.bic:'')+'.');
+  condTexts.push('Escompte pour paiement anticipe : neant.');
+  if(s.mentionRetard) condTexts.push(pdfSafe(s.mentionRetard));
+  condTexts.forEach(function(ct){
+    doc.splitTextToSize(ct, contentW).forEach(function(wl){ ensureSpace(6); doc.text(wl,M,y); y+=4; });
+  });
+
+  return doc;
+}
+async function downloadFacturePdf(ch){
+  if(!ch.factureNumero) return;
+  var btn=document.getElementById('btnDownloadFacturePdf');
+  var canNativeSave = !!state.downloadsApi;
+  var canBrowserDownload = !window.claude;
+  if(!canNativeSave && !canBrowserDownload){
+    alert('Le téléchargement direct n’est pas disponible dans cette vue.\nUtilisez "Aperçu / Imprimer" puis choisissez "Enregistrer au format PDF" dans la boîte d’impression.');
+    return;
+  }
+  if(!(window.jspdf && window.jspdf.jsPDF)){
+    alert('La bibliothèque PDF n’a pas pu se charger. Rechargez la page et réessayez.');
+    return;
+  }
+  var t=computeTotals(ch);
+  var alloc=allocateLotPrices(ch,t);
+  var ft=computeFactureTotals(ch);
+  if(btn){ btn.disabled=true; btn.textContent='Génération…'; }
+  try{
+    var doc=buildFacturePdf(ch,ft,alloc);
+    if(!doc) throw new Error('pdf_build_failed');
+    var blob=doc.output('blob');
+    var filename=(ch.factureNumero||'facture')+'.pdf';
+    if(canNativeSave){
+      var res=await state.downloadsApi.save({filename:filename, data:blob});
+      if(btn){ btn.textContent = res.status==='saved' ? 'PDF enregistré ✓' : 'Facture transmise ✓'; }
+    } else {
+      browserDownloadBlob(blob, filename);
+      if(btn){ btn.textContent='PDF téléchargé ✓'; }
+    }
+  }catch(e){
+    if(e && e.code==='declined'){ if(btn) btn.textContent='Télécharger la facture (PDF)'; }
+    else { alert('Enregistrement impossible : '+((e&&e.message)||'erreur inconnue')); if(btn) btn.textContent='Télécharger la facture (PDF)'; }
+  } finally {
+    if(btn){ setTimeout(function(){ btn.disabled=false; if(btn.textContent.indexOf('✓')>-1) btn.textContent='Télécharger la facture (PDF)'; },2200); }
   }
 }
 
