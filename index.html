@@ -364,11 +364,9 @@ var FOURNITURE_ITEMS = [
   {key:'echafaudage', label:'Échafaudage / escabeaux', owner:'soustraitant'},
   {key:'epi', label:'Équipements de protection individuelle (EPI)', owner:'soustraitant'}
 ];
-function defaultFournituresMap(){
-  var o={};
-  FOURNITURE_ITEMS.forEach(function(it){ o[it.key]=it.owner; });
-  return o;
-}
+/* Rien n'est coché par défaut : chaque chantier n'utilise pas forcément
+   les 17 consommables, l'utilisateur ne coche que ce qui s'applique. */
+function defaultFournituresMap(){ return {}; }
 
 /* ---------------- contrat de sous-traitance : clauses à cocher ----------
    Chaque clause optionnelle correspond à un article du contrat. Les
@@ -1140,11 +1138,13 @@ function buildContratHtml(ch){
 
     '<div class="card pad section">'+
       '<div class="section-head"><span class="section-no">C</span><h3>Fournitures</h3></div>'+
-      '<div class="section-hint">Qui fournit quoi, poste par poste — évite les suppléments liés à un consommable oublié. Valeurs par défaut modifiables.</div>'+
-      '<div class="lots-wrap"><table class="lots"><thead><tr><th class="col-designation">Élément</th><th class="col-num">Fourni par</th></tr></thead><tbody>'+
+      '<div class="section-hint">Cochez ce qui s’applique à ce chantier, puis précisez qui le fournit. Ce qui n’est pas coché n’apparaît pas dans le contrat.</div>'+
+      '<div class="lots-wrap"><table class="lots"><thead><tr><th style="width:30px;"></th><th class="col-designation">Élément</th><th class="col-num">Fourni par</th></tr></thead><tbody>'+
         FOURNITURE_ITEMS.map(function(it){
+          var checked=!!c.fournitures[it.key];
           var owner=c.fournitures[it.key]||it.owner;
-          return '<tr><td>'+esc(it.label)+'</td><td><select data-fourn="'+it.key+'">'+
+          return '<tr><td style="text-align:center;"><input type="checkbox" data-fournchk="'+it.key+'" '+(checked?'checked':'')+'></td>'+
+            '<td>'+esc(it.label)+'</td><td><select data-fourn="'+it.key+'"'+(checked?'':' disabled')+'>'+
             '<option value="entreprise"'+(owner==='entreprise'?' selected':'')+'>Vous</option>'+
             '<option value="soustraitant"'+(owner==='soustraitant'?' selected':'')+'>Sous-traitant</option>'+
           '</select></td></tr>';
@@ -1287,6 +1287,22 @@ function bindContratEvents(ch){
   document.querySelectorAll('[data-fourn]').forEach(function(sel){
     sel.addEventListener('change',function(){
       c.fournitures[sel.getAttribute('data-fourn')]=sel.value;
+      scheduleSave(ch);
+    });
+  });
+  document.querySelectorAll('[data-fournchk]').forEach(function(chk){
+    chk.addEventListener('change',function(){
+      var key=chk.getAttribute('data-fournchk');
+      var sel=document.querySelector('[data-fourn="'+key+'"]');
+      if(chk.checked){
+        var item=FOURNITURE_ITEMS.filter(function(it){return it.key===key;})[0];
+        c.fournitures[key] = (sel&&sel.value) || (item&&item.owner) || 'entreprise';
+        if(sel){ sel.disabled=false; sel.value=c.fournitures[key]; }
+      } else {
+        delete c.fournitures[key];
+        if(sel) sel.disabled=true;
+      }
+      renderContratRecap(ch);
       scheduleSave(ch);
     });
   });
@@ -2249,12 +2265,13 @@ function buildContratArticles(ch){
   if(cl.fournitures){
     var byEntreprise=[], bySoustraitant=[];
     FOURNITURE_ITEMS.forEach(function(it){
-      var owner=c.fournitures[it.key]||it.owner;
+      var owner=c.fournitures[it.key];
+      if(!owner) return;
       (owner==='entreprise'?byEntreprise:bySoustraitant).push(it.label);
     });
     var fournParas=[
-      'Sont fournis par l’Entreprise principale : '+(byEntreprise.length?byEntreprise.join(', '):'aucun élément listé')+(c.materiauxFournis?', ainsi que '+c.materiauxFournis:'')+'.',
-      'Sont fournis par le Sous-traitant, à ses frais : '+(bySoustraitant.length?bySoustraitant.join(', '):'aucun élément listé')+(c.materielSousTraitant?', ainsi que '+c.materielSousTraitant:'')+'.',
+      'Sont fournis par l’Entreprise principale : '+(byEntreprise.length?byEntreprise.join(', '):'aucun élément spécifique retenu')+(c.materiauxFournis?', ainsi que '+c.materiauxFournis:'')+'.',
+      'Sont fournis par le Sous-traitant, à ses frais : '+(bySoustraitant.length?bySoustraitant.join(', '):'aucun élément spécifique retenu')+(c.materielSousTraitant?', ainsi que '+c.materielSousTraitant:'')+'.',
       'Toute fourniture non répartie ci-dessus et nécessaire à l’exécution des travaux est réputée à la charge du Sous-traitant, sauf accord écrit contraire préalable.'
     ];
     art('Fourniture des matériaux et du matériel', fournParas);
