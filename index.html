@@ -335,6 +335,8 @@ function newChantier(numero){
     photos:[], notes:'', pieces:[],
     validiteJours: state.settings.validiteJoursDefault||30,
     acomptePct: state.settings.acomptePctDefault||30,
+    tvaApplicable: state.settings.tvaApplicable!==false,
+    tvaPct: state.settings.tvaPct!=null ? state.settings.tvaPct : 20,
     createdAt:now, updatedAt:now
   };
 }
@@ -395,7 +397,11 @@ var Store = {
         }catch(e){}
       }
     }
-    state.chantiers.forEach(function(c){ c.pieces=c.pieces||[]; c.photos=c.photos||[]; c.lots=c.lots||[]; });
+    state.chantiers.forEach(function(c){
+      c.pieces=c.pieces||[]; c.photos=c.photos||[]; c.lots=c.lots||[];
+      if(c.tvaApplicable==null) c.tvaApplicable = state.settings.tvaApplicable!==false;
+      if(c.tvaPct==null) c.tvaPct = state.settings.tvaPct!=null ? state.settings.tvaPct : 20;
+    });
     if(state.chantiers.length===0){
       await Store.seedExample();
     }
@@ -481,6 +487,21 @@ function computeTotals(ch){
 function num(v){ var n=parseFloat(v); return isNaN(n)?0:n; }
 function eur(v){ return (Math.round(v*100)/100).toLocaleString('fr-FR',{minimumFractionDigits:2,maximumFractionDigits:2})+' €'; }
 function eur0(v){ return Math.round(v).toLocaleString('fr-FR')+' €'; }
+/* jsPDF's built-in fonts don't reliably render '€' or the narrow no-break
+   space toLocaleString('fr-FR') uses for grouping — both can come out as
+   a stray glyph (seen as "/"). PDF text stays plain ASCII. */
+function eurPdf(v){
+  var n=Math.round((v||0)*100)/100;
+  var neg=n<0; n=Math.abs(n);
+  var parts=n.toFixed(2).split('.');
+  var withSep=parts[0].replace(/\B(?=(\d{3})+(?!\d))/g,' ');
+  return (neg?'-':'')+withSep+','+parts[1]+' EUR';
+}
+/* Same jsPDF glyph limitation applies to any free-text field a user typed
+   a '€' or special space into (e.g. the late-payment mention). */
+function pdfSafe(str){
+  return String(str==null?'':str).replace(/€/g,'EUR').replace(/[  ]/g,' ');
+}
 function margeBand(t){
   if(t<15) return {level:'bad', label:'À refuser en principe, ou à renégocier'};
   if(t<18) return {level:'warn', label:'Sous l’objectif — à négocier'};
@@ -682,6 +703,8 @@ function renderWorkspace(){
           '<div class="field-grid">'+
             '<div class="field"><label>Acompte à la signature (%)</label><input class="num-in" id="f_acompte" type="number" value="'+ch.acomptePct+'"></div>'+
             '<div class="field"><label>Validité du devis (jours)</label><input class="num-in" id="f_validite" type="number" value="'+ch.validiteJours+'"></div>'+
+            '<div class="field"><label>Taux de TVA (%)</label><input list="tvaSuggestions" class="num-in" id="f_tvaPct" type="number" step="0.1" value="'+ch.tvaPct+'"><datalist id="tvaSuggestions"><option value="20">20 % — taux normal</option><option value="10">10 % — rénovation logement</option><option value="5.5">5,5 % — rénovation énergétique</option><option value="0">0 %</option></datalist></div>'+
+            '<div class="field span3"><div class="toggle-row"><label>TVA applicable sur ce devis</label><input type="checkbox" id="f_tvaApplicable" '+(ch.tvaApplicable?'checked':'')+'></div></div>'+
             '<div class="field span3"><label>Notes internes</label><textarea id="f_notes" placeholder="Remarques pour vous-même, non imprimées sur le devis">'+esc(ch.notes)+'</textarea></div>'+
           '</div>'+
         '</div>'+
@@ -833,6 +856,14 @@ function bindWorkspaceEvents(ch){
   bindText('f_notes','notes');
   bindText('f_acompte','acomptePct');
   bindText('f_validite','validiteJours');
+  bindText('f_tvaPct','tvaPct');
+  var tvaAppEl=document.getElementById('f_tvaApplicable');
+  if(tvaAppEl){
+    tvaAppEl.addEventListener('change',function(){
+      ch.tvaApplicable=tvaAppEl.checked;
+      scheduleSave(ch);
+    });
+  }
 
   ['f_transport','f_location','f_provision'].forEach(function(id){
     var el=document.getElementById(id);
@@ -1234,7 +1265,7 @@ function printDevis(ch){
       '<td class="r">'+(unitPrice!==null?eur(unitPrice):'forfait')+'</td>'+
       '<td class="r">'+eur(a.prixVenteHT)+'</td></tr>';
   }).join('');
-  var tva = s.tvaApplicable ? t.prixVente*(num(s.tvaPct)/100) : 0;
+  var tva = ch.tvaApplicable ? t.prixVente*(num(ch.tvaPct)/100) : 0;
   var ttc = t.prixVente+tva;
   var acompteVal = t.prixVente*(num(ch.acomptePct)/100);
 
@@ -1255,8 +1286,8 @@ function printDevis(ch){
       '<tbody>'+rows+'</tbody></table>'+
       '<div class="ps-totals">'+
         '<div class="row"><span>Total HT</span><span class="num">'+eur(t.prixVente)+'</span></div>'+
-        (s.tvaApplicable?'<div class="row"><span>TVA ('+num(s.tvaPct)+'%)</span><span class="num">'+eur(tva)+'</span></div>':'')+
-        '<div class="row grand"><span>Total '+(s.tvaApplicable?'TTC':'HT')+'</span><span class="num">'+eur(s.tvaApplicable?ttc:t.prixVente)+'</span></div>'+
+        (ch.tvaApplicable?'<div class="row"><span>TVA ('+num(ch.tvaPct)+'%)</span><span class="num">'+eur(tva)+'</span></div>':'')+
+        '<div class="row grand"><span>Total '+(ch.tvaApplicable?'TTC':'HT')+'</span><span class="num">'+eur(ch.tvaApplicable?ttc:t.prixVente)+'</span></div>'+
       '</div>'+
       '<div class="ps-cond">'+
         'Acompte à la signature : '+num(ch.acomptePct)+'% soit '+eur(acompteVal)+'. Solde à réception des travaux.<br>'+
@@ -1288,13 +1319,13 @@ function buildDevisPdf(ch,totalsForPdf,alloc){
   }
 
   doc.setFont('helvetica','bold'); doc.setFontSize(17); setInk();
-  doc.text(s.nom||'Votre entreprise', M, y+4);
+  doc.text(pdfSafe(s.nom||'Votre entreprise'), M, y+4);
   doc.setFont('helvetica','normal'); doc.setFontSize(9); setGray();
   var hLines=[];
-  if(s.forme) hLines.push(s.forme);
-  if(s.siret) hLines.push('SIRET '+s.siret);
-  if(s.adresse) hLines.push(s.adresse);
-  var contactLine=[s.tel,s.email].filter(Boolean).join('   ·   ');
+  if(s.forme) hLines.push(pdfSafe(s.forme));
+  if(s.siret) hLines.push('SIRET '+pdfSafe(s.siret));
+  if(s.adresse) hLines.push(pdfSafe(s.adresse));
+  var contactLine=[s.tel,s.email].filter(Boolean).map(pdfSafe).join('   -   ');
   if(contactLine) hLines.push(contactLine);
   var hy=y+10;
   hLines.forEach(function(l){ doc.text(l,M,hy); hy+=4.2; });
@@ -1311,16 +1342,16 @@ function buildDevisPdf(ch,totalsForPdf,alloc){
   doc.setFont('helvetica','bold'); doc.setFontSize(8); setGray();
   doc.text('CLIENT', M, y); y+=5;
   doc.setFont('helvetica','bold'); doc.setFontSize(11); setInk();
-  doc.text(ch.client.nom||'—', M, y); y+=5.2;
+  doc.text(pdfSafe(ch.client.nom)||'-', M, y); y+=5.2;
   doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setGray();
-  if(ch.adresse){ doc.text(ch.adresse, M, y); y+=4.6; }
-  if(ch.client.contact){ doc.text('À l’attention de '+ch.client.contact, M, y); y+=4.6; }
+  if(ch.adresse){ doc.text(pdfSafe(ch.adresse), M, y); y+=4.6; }
+  if(ch.client.contact){ doc.text('A l\'attention de '+pdfSafe(ch.client.contact), M, y); y+=4.6; }
   y+=3;
 
   doc.setFont('helvetica','bold'); doc.setFontSize(8); setGray();
   doc.text('OBJET', M, y); y+=5;
   doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setInk();
-  doc.splitTextToSize(ch.description||'Travaux de rénovation intérieure', contentW).forEach(function(l){ doc.text(l,M,y); y+=4.6; });
+  doc.splitTextToSize(pdfSafe(ch.description||'Travaux de rénovation intérieure'), contentW).forEach(function(l){ doc.text(l,M,y); y+=4.6; });
   y+=4;
 
   function tableHeader(){
@@ -1338,13 +1369,13 @@ function buildDevisPdf(ch,totalsForPdf,alloc){
     var l=a.lot; var qte=num(l.quantite);
     var unitPrice = qte>0 ? a.prixVenteHT/qte : null;
     setInk();
-    var nameLines=doc.splitTextToSize(l.designation||'—', 88);
+    var nameLines=doc.splitTextToSize(pdfSafe(l.designation)||'-', 88);
     doc.text(nameLines, M, y);
     setGray();
-    doc.text(qte>0 ? (qte+' '+(l.unite==='forfait'?'':l.unite)) : (l.unite==='forfait'?'forfait':'—'), M+100, y, {align:'right'});
-    doc.text(unitPrice!==null ? eur(unitPrice) : '—', M+140, y, {align:'right'});
+    doc.text(qte>0 ? (qte+' '+(l.unite==='forfait'?'':l.unite==='m²'?'m2':l.unite)) : (l.unite==='forfait'?'forfait':'—'), M+100, y, {align:'right'});
+    doc.text(unitPrice!==null ? eurPdf(unitPrice) : '—', M+140, y, {align:'right'});
     setInk();
-    doc.text(eur(a.prixVenteHT), pageW-M, y, {align:'right'});
+    doc.text(eurPdf(a.prixVenteHT), pageW-M, y, {align:'right'});
     var rowH=Math.max(nameLines.length*4.4, 5.5);
     y+=rowH;
     hr(lightline,0.2); y+=2.8;
@@ -1354,22 +1385,22 @@ function buildDevisPdf(ch,totalsForPdf,alloc){
   ensureSpace(42);
   var boxX=pageW-M-72;
   doc.setFont('helvetica','normal'); doc.setFontSize(9.5); setInk();
-  doc.text('Total HT', boxX, y); doc.text(eur(totalsForPdf.ht), pageW-M, y, {align:'right'}); y+=5.5;
-  if(s.tvaApplicable){
-    doc.text('TVA ('+num(s.tvaPct)+'%)', boxX, y); doc.text(eur(totalsForPdf.tva), pageW-M, y, {align:'right'}); y+=5.5;
+  doc.text('Total HT', boxX, y); doc.text(eurPdf(totalsForPdf.ht), pageW-M, y, {align:'right'}); y+=5.5;
+  if(ch.tvaApplicable){
+    doc.text('TVA ('+num(ch.tvaPct)+'%)', boxX, y); doc.text(eurPdf(totalsForPdf.tva), pageW-M, y, {align:'right'}); y+=5.5;
   }
   doc.setDrawColor(ink[0],ink[1],ink[2]); doc.setLineWidth(0.5); doc.line(boxX,y,pageW-M,y); y+=5.5;
   doc.setFont('helvetica','bold'); doc.setFontSize(12);
-  doc.text('Total '+(s.tvaApplicable?'TTC':'HT'), boxX, y);
-  doc.text(eur(totalsForPdf.total), pageW-M, y, {align:'right'});
+  doc.text('Total '+(ch.tvaApplicable?'TTC':'HT'), boxX, y);
+  doc.text(eurPdf(totalsForPdf.total), pageW-M, y, {align:'right'});
   y+=11;
 
   ensureSpace(34);
   hr(lightline,0.3); y+=5;
   doc.setFont('helvetica','normal'); doc.setFontSize(8.3); setGray();
-  var condTexts=['Acompte à la signature : '+num(ch.acomptePct)+'% soit '+eur(totalsForPdf.acompte)+'. Solde à réception des travaux.'];
-  if(s.iban) condTexts.push('Règlement par virement — IBAN '+s.iban+(s.bic?' · BIC '+s.bic:'')+'.');
-  if(s.mentionRetard) condTexts.push(s.mentionRetard);
+  var condTexts=['Acompte a la signature : '+num(ch.acomptePct)+'% soit '+eurPdf(totalsForPdf.acompte)+'. Solde a reception des travaux.'];
+  if(s.iban) condTexts.push('Reglement par virement - IBAN '+s.iban+(s.bic?' - BIC '+s.bic:'')+'.');
+  if(s.mentionRetard) condTexts.push(pdfSafe(s.mentionRetard));
   condTexts.forEach(function(ct){
     doc.splitTextToSize(ct, contentW).forEach(function(wl){ ensureSpace(6); doc.text(wl,M,y); y+=4; });
   });
@@ -1380,8 +1411,8 @@ function buildDevisPdf(ch,totalsForPdf,alloc){
   doc.line(M,y,M+72,y);
   doc.line(pageW-M-72,y,pageW-M,y);
   y+=4; doc.setFontSize(8.3); setGray();
-  doc.text('Date et signature — '+(s.nom||'l’entreprise'), M, y);
-  doc.text('Bon pour accord — signature du client', pageW-M-72, y);
+  doc.text('Date et signature - '+pdfSafe(s.nom||'l\'entreprise'), M, y);
+  doc.text('Bon pour accord - signature du client', pageW-M-72, y);
 
   return doc;
 }
@@ -1407,8 +1438,7 @@ async function downloadPdf(ch){
   }
   var t=computeTotals(ch);
   var alloc=allocateLotPrices(ch,t);
-  var s=state.settings;
-  var tva = s.tvaApplicable ? t.prixVente*(num(s.tvaPct)/100) : 0;
+  var tva = ch.tvaApplicable ? t.prixVente*(num(ch.tvaPct)/100) : 0;
   var totalsForPdf={ ht:t.prixVente, tva:tva, total:t.prixVente+tva, acompte:t.prixVente*(num(ch.acomptePct)/100) };
   if(btn){ btn.disabled=true; btn.textContent='Génération…'; }
   try{
@@ -1449,9 +1479,10 @@ function openSettingsModal(){
           '<div class="field"><label>IBAN</label><input id="s_iban" value="'+esc(s.iban)+'"></div>'+
           '<div class="field"><label>BIC</label><input id="s_bic" value="'+esc(s.bic)+'"></div>'+
         '</div>'+
-        '<div class="toggle-row"><label>TVA applicable</label><input type="checkbox" id="s_tva" '+(s.tvaApplicable?'checked':'')+'></div>'+
+        '<div class="toggle-row"><label>TVA applicable par défaut</label><input type="checkbox" id="s_tva" '+(s.tvaApplicable?'checked':'')+'></div>'+
+        '<div class="section-hint" style="margin:-6px 0 0;">Réglages utilisés pour tout nouveau devis — chaque devis peut ensuite avoir son propre taux de TVA (étape 4).</div>'+
         '<div class="field-grid">'+
-          '<div class="field"><label>Taux TVA (%)</label><input id="s_tvaPct" type="number" value="'+s.tvaPct+'"></div>'+
+          '<div class="field"><label>Taux TVA par défaut (%)</label><input id="s_tvaPct" type="number" value="'+s.tvaPct+'"></div>'+
           '<div class="field"><label>Acompte par défaut (%)</label><input id="s_acompte" type="number" value="'+s.acomptePctDefault+'"></div>'+
           '<div class="field"><label>Validité devis par défaut (j)</label><input id="s_validite" type="number" value="'+s.validiteJoursDefault+'"></div>'+
         '</div>'+
