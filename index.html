@@ -334,7 +334,7 @@ function newChantier(numero){
   return {
     id:null, numero:numero, statut:'brouillon', isExample:false,
     client:{nom:'',type:'syndic',contact:'',tel:'',email:''},
-    adresse:'', dateVisite:'', description:'',
+    adresse:'', dateVisite:'', dateRendu:'', description:'',
     lots:[], transport:0, locationDechets:0, provisionPct:3, margeCiblePct:20,
     photos:[], notes:'', pieces:[],
     validiteJours: state.settings.validiteJoursDefault||30,
@@ -578,7 +578,7 @@ function genererFacture(ch){
   if(ch.factureNumero) return;
   ch.factureNumero = nextNumeroFacture();
   ch.factureDate = new Date().toISOString().slice(0,10);
-  ch.dateFinChantier = ch.dateFinChantier || ch.factureDate;
+  ch.dateFinChantier = ch.dateFinChantier || ch.dateRendu || ch.factureDate;
   ch.factureDelaiJours = ch.factureDelaiJours!=null ? ch.factureDelaiJours : 30;
   ch.factureAcompteRecu = ch.factureAcompteRecu!=null ? ch.factureAcompteRecu : (num(ch.acomptePct)>0);
   ch.factureStatutPaiement = ch.factureStatutPaiement || 'attente';
@@ -717,6 +717,7 @@ function renderWorkspace(){
             '<div class="field"><label>Téléphone</label><input id="f_client_tel" value="'+esc(ch.client.tel)+'"></div>'+
             '<div class="field"><label>Email</label><input id="f_client_email" value="'+esc(ch.client.email)+'"></div>'+
             '<div class="field"><label>Date de visite</label><input type="date" id="f_dateVisite" value="'+esc(ch.dateVisite)+'"></div>'+
+            '<div class="field"><label>Date de rendu prévue</label><input type="date" id="f_dateRendu" value="'+esc(ch.dateRendu||'')+'"></div>'+
             '<div class="field span3"><label>Adresse du chantier</label><input id="f_adresse" value="'+esc(ch.adresse)+'" placeholder="N°, rue, code postal, ville"></div>'+
             '<div class="field span3"><label>Constat de visite / besoin</label><textarea id="f_description" placeholder="État des lieux, travaux demandés, contraintes d’accès…">'+esc(ch.description)+'</textarea></div>'+
           '</div>'+
@@ -1007,6 +1008,7 @@ function bindWorkspaceEvents(ch){
   bindText('f_client_tel','client.tel');
   bindText('f_client_email','client.email');
   bindText('f_dateVisite','dateVisite');
+  bindText('f_dateRendu','dateRendu');
   bindText('f_adresse','adresse');
   bindText('f_description','description');
   bindText('f_notes','notes');
