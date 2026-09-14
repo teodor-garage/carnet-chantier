@@ -282,6 +282,7 @@ table.ps-table td.r,table.ps-table th.r{text-align:right;font-family:var(--mono)
 .toggle-row label{font-size:13px;font-weight:600;}
 
 .offline-note{font-size:11.5px;color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn-line);border-radius:7px;padding:6px 10px;}
+.offline-note.ok{color:var(--good);background:var(--good-soft);border-color:var(--good-line);}
 .hidden{display:none!important;}
 </style>
 
@@ -478,6 +479,36 @@ var state = {
 
 var LOCAL_KEY='carnet_chantier_v1';
 
+/* ---------------- synchronisation cloud (JSONBin) ---------------- */
+var JSONBIN_ID='6aa6a672ffd5d16053017d4a';
+var JSONBIN_KEY='$2a$10$Bk0eMIifC3UcyBGJokSI0uUpZKA3.L0PgxnS7a2BbQ96FiJdVEhfO';
+var JSONBIN_URL='https://api.jsonbin.io/v3/b/'+JSONBIN_ID;
+async function cloudFetch(){
+  try{
+    var res = await fetch(JSONBIN_URL+'/latest', {headers:{'X-Master-Key':JSONBIN_KEY}});
+    if(!res.ok) return null;
+    var data = await res.json();
+    return (data && data.record) || null;
+  }catch(e){ return null; }
+}
+function chantierForCloud(ch){
+  var c=Object.assign({}, ch);
+  delete c.photos;
+  return c;
+}
+async function cloudSaveAll(){
+  var payload={ settings:state.settings, chantiers:state.chantiers.map(chantierForCloud), initialized:true, updatedAt:new Date().toISOString() };
+  try{
+    var res = await fetch(JSONBIN_URL, {
+      method:'PUT',
+      headers:{'Content-Type':'application/json','X-Master-Key':JSONBIN_KEY},
+      body: JSON.stringify(payload)
+    });
+    state.cloudOk = res.ok;
+  }catch(e){ state.cloudOk=false; }
+  return state.cloudOk;
+}
+
 /* ---------------- storage abstraction ---------------- */
 var Store = {
   async init(){
@@ -491,6 +522,10 @@ var Store = {
        choix et on ne réaffiche rien) — sans ça, vider la liste faisait
        réapparaître le chantier d'exemple au rechargement suivant. */
     var alreadyInitialized=false;
+    var localRaw=null, localParsed=null;
+    try{ localRaw = localStorage.getItem(LOCAL_KEY); }catch(e){}
+    if(localRaw){ try{ localParsed = JSON.parse(localRaw); }catch(e){} }
+
     if(db){
       state.mode='db';
       try{
@@ -506,16 +541,28 @@ var Store = {
         state.chantiers = q.docs.map(function(d){ var o=d.data(); o.id=d.id; return o; });
       }catch(e){ state.chantiers=[]; }
     } else {
-      state.mode='local';
-      var raw=null;
-      try{ raw = localStorage.getItem(LOCAL_KEY); }catch(e){}
-      alreadyInitialized = raw!=null;
-      if(raw){
-        try{
-          var parsed = JSON.parse(raw);
-          state.settings = Object.assign(defaultSettings(), parsed.settings||{});
-          state.chantiers = parsed.chantiers||[];
-        }catch(e){}
+      /* Site statique sans backend : JSONBin sert de source de vérité
+         partagée entre appareils. Les photos ne sont pas synchronisées
+         (limite 100 Ko/bin) — on les recolle depuis le cache local par id. */
+      state.mode='cloud';
+      var localPhotoMap={};
+      if(localParsed && Array.isArray(localParsed.chantiers)){
+        localParsed.chantiers.forEach(function(c){ if(c&&c.id) localPhotoMap[c.id]=c.photos||[]; });
+      }
+      var cloud = await cloudFetch();
+      state.cloudOk = !!cloud;
+      if(cloud && Array.isArray(cloud.chantiers)){
+        state.settings = Object.assign(defaultSettings(), cloud.settings||{});
+        state.chantiers = cloud.chantiers.map(function(c){
+          c=Object.assign({}, c);
+          c.photos = localPhotoMap[c.id]||[];
+          return c;
+        });
+        alreadyInitialized = !!cloud.initialized;
+      } else if(localParsed){
+        state.settings = Object.assign(defaultSettings(), localParsed.settings||{});
+        state.chantiers = localParsed.chantiers||[];
+        alreadyInitialized = true;
       }
     }
     state.chantiers.forEach(function(c){
@@ -529,9 +576,13 @@ var Store = {
     if(state.mode==='db' && !alreadyInitialized){
       try{ await state.db.doc('meta/carnet').set({initialized:true, at:new Date().toISOString()}); }catch(e){}
     }
+    if(state.mode==='cloud'){
+      Store.persistLocal();
+      if(!alreadyInitialized) await cloudSaveAll();
+    }
   },
   persistLocal(){
-    if(state.mode!=='local') return;
+    if(state.mode==='db') return;
     try{ localStorage.setItem(LOCAL_KEY, JSON.stringify({settings:state.settings, chantiers:state.chantiers})); }catch(e){}
   },
   async saveSettings(s){
@@ -540,6 +591,7 @@ var Store = {
       try{ await state.db.doc('settings/entreprise').set(s); }catch(e){}
     } else {
       Store.persistLocal();
+      if(state.mode==='cloud') await cloudSaveAll();
     }
   },
   async saveChantier(ch){
@@ -551,6 +603,7 @@ var Store = {
     } else {
       if(!ch.id) ch.id = uid()+uid();
       Store.persistLocal();
+      if(state.mode==='cloud') await cloudSaveAll();
     }
     return ch;
   },
@@ -560,6 +613,7 @@ var Store = {
       try{ await state.db.collection('chantiers').doc(id).delete(); }catch(e){}
     } else {
       Store.persistLocal();
+      if(state.mode==='cloud') await cloudSaveAll();
     }
   },
   async seedExample(){
@@ -768,7 +822,11 @@ function renderChantierList(){
 
 function renderOfflineNote(){
   var el=document.getElementById('offlineNote');
-  if(state.mode==='local'){
+  if(state.mode==='cloud'){
+    el.innerHTML = state.cloudOk
+      ? '<div class="offline-note ok">Synchronisé sur tous vos appareils. Les photos restent locales à chaque appareil.</div>'
+      : '<div class="offline-note">Hors ligne — dernière version connue de cet appareil. La synchronisation reprendra à la reconnexion.</div>';
+  } else if(state.mode==='local'){
     el.innerHTML='<div class="offline-note">Stockage local à cet appareil — le stockage partagé n’est pas disponible ici.</div>';
   } else { el.innerHTML=''; }
 }
@@ -1326,8 +1384,15 @@ function scheduleSave(ch){
       state.currentId=ch.id;
     }
     var el2=document.getElementById('saveState');
-    if(el2){ el2.textContent='enregistré'; el2.className='save-state saved'; }
-    renderKpis(); renderChantierList();
+    if(el2){
+      if(state.mode==='cloud'){
+        el2.textContent = state.cloudOk ? 'synchronisé ✓' : 'enregistré localement (hors ligne)';
+        el2.className = 'save-state '+(state.cloudOk?'saved':'saving');
+      } else {
+        el2.textContent='enregistré'; el2.className='save-state saved';
+      }
+    }
+    renderKpis(); renderChantierList(); renderOfflineNote();
   },600);
 }
 
@@ -2668,6 +2733,7 @@ function openSettingsModal(){
     await Store.saveSettings(ns);
     close();
     renderWorkspace();
+    renderOfflineNote();
     document.getElementById('companyNameLabel').textContent = ns.nom ? ns.nom+' — Système de devis' : 'Système de devis';
   };
   function val(id){ return document.getElementById(id).value; }
