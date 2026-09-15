@@ -427,6 +427,13 @@ function getContrat(ch){
   }
   return ch.contrat;
 }
+function defaultRentabilite(){
+  return { prixClientTTC:'', tvaClientPct:20, materielTTC:'', sousTraitantHT:'', isPct:25 };
+}
+function getRentabilite(ch){
+  if(!ch.rentabilite) ch.rentabilite = defaultRentabilite();
+  return ch.rentabilite;
+}
 
 function defaultSettings(){
   return {
@@ -865,6 +872,7 @@ function renderWorkspace(){
       '<button type="button" class="ws-tab'+(state.wsTab==='devis'?' active':'')+'" data-wstab="devis">Devis</button>'+
       '<button type="button" class="ws-tab'+(state.wsTab==='metre'?' active':'')+'" data-wstab="metre">Calculateur de métré</button>'+
       '<button type="button" class="ws-tab'+(state.wsTab==='contrat'?' active':'')+'" data-wstab="contrat">Contrat sous-traitant</button>'+
+      '<button type="button" class="ws-tab'+(state.wsTab==='rentabilite'?' active':'')+'" data-wstab="rentabilite">Rentabilité</button>'+
       ((ch.statut==='termine'||ch.factureNumero)?'<button type="button" class="ws-tab'+(state.wsTab==='facture'?' active':'')+'" data-wstab="facture">Facture'+(ch.factureNumero?' · '+esc(ch.factureNumero):'')+'</button>':'')+
     '</div>';
 
@@ -884,6 +892,13 @@ function renderWorkspace(){
     ws.innerHTML = headerHtml + buildMetreGridHtml(ch);
     renderMetreRecap(ch);
     bindMetreEvents(ch);
+    bindWsTabEvents(ch);
+    return;
+  }
+  if(state.wsTab==='rentabilite'){
+    ws.innerHTML = headerHtml + buildRentabiliteHtml(ch);
+    renderRentabiliteRecap(ch);
+    bindRentabiliteEvents(ch);
     bindWsTabEvents(ch);
     return;
   }
@@ -1815,6 +1830,94 @@ function bindZoneRows(ch,p){
       bindZoneRows(ch,p); patchPieceComputed(ch,p); scheduleSave(ch);
     };
   });
+}
+
+/* ---------------- rentabilité ---------------- */
+function computeRentabilite(r){
+  var prixClientTTC = num(r.prixClientTTC);
+  var tvaClientPct = num(r.tvaClientPct);
+  var materielTTC = num(r.materielTTC);
+  var sousTraitantHT = num(r.sousTraitantHT);
+  var isPct = num(r.isPct);
+
+  var prixClientHT = prixClientTTC / (1 + tvaClientPct/100);
+  var tvaClient = prixClientTTC - prixClientHT;
+  var materielHT = materielTTC / 1.20;
+  var tvaRecuperable = materielTTC - materielHT;
+  var tvaNette = tvaClient - tvaRecuperable;
+  var coutTotalChantier = materielTTC + sousTraitantHT;
+  var beneficeAvantIS = prixClientHT - materielHT - sousTraitantHT;
+  var isEstime = beneficeAvantIS * (isPct/100);
+  var montantANePasToucher = tvaNette + isEstime;
+  var resteFinalSociete = prixClientTTC - materielTTC - sousTraitantHT - tvaNette - isEstime;
+
+  return {
+    prixClientHT:prixClientHT, tvaClient:tvaClient, materielHT:materielHT, tvaRecuperable:tvaRecuperable,
+    tvaNette:tvaNette, coutTotalChantier:coutTotalChantier, beneficeAvantIS:beneficeAvantIS,
+    isEstime:isEstime, montantANePasToucher:montantANePasToucher, resteFinalSociete:resteFinalSociete
+  };
+}
+function buildRentabiliteHtml(ch){
+  var r=getRentabilite(ch);
+  return '<div class="ws-grid">'+
+    '<div class="ws-main">'+
+      '<div class="card pad section">'+
+        '<div class="section-head"><h3>Calculateur de rentabilité</h3></div>'+
+        '<div class="section-hint">Estimez ce qu’il faut mettre de côté (TVA nette, IS) et ce qui restera réellement dans la société. Purement interne — n’apparaît jamais sur le devis ni la facture envoyés au client.</div>'+
+        '<div class="field-grid">'+
+          '<div class="field"><label>Prix client TTC (€)</label><input class="num-in" id="rt_prixClientTTC" type="number" step="1" value="'+esc(r.prixClientTTC)+'"></div>'+
+          '<div class="field"><label>Taux de TVA client</label><select id="rt_tvaClientPct">'+
+            [20,10,5.5].map(function(v){return '<option value="'+v+'"'+(num(r.tvaClientPct)===v?' selected':'')+'>'+(v===5.5?'5,5':v)+' %</option>';}).join('')+
+          '</select></div>'+
+          '<div class="field"><label>Prix matériel TTC (€)</label><input class="num-in" id="rt_materielTTC" type="number" step="1" value="'+esc(r.materielTTC)+'"></div>'+
+          '<div class="field"><label>Prix sous-traitant HT (€)</label><input class="num-in" id="rt_sousTraitantHT" type="number" step="1" value="'+esc(r.sousTraitantHT)+'"></div>'+
+          '<div class="field"><label>Taux d’IS estimé</label><select id="rt_isPct">'+
+            [15,25].map(function(v){return '<option value="'+v+'"'+(num(r.isPct)===v?' selected':'')+'>'+v+' %</option>';}).join('')+
+          '</select></div>'+
+        '</div>'+
+      '</div>'+
+    '</div>'+
+    '<div class="ws-side">'+
+      '<div class="card recap-card" id="rentabiliteRecapCard"></div>'+
+    '</div>'+
+  '</div>';
+}
+function renderRentabiliteRecap(ch){
+  var el=document.getElementById('rentabiliteRecapCard');
+  if(!el) return;
+  var r=getRentabilite(ch);
+  var t=computeRentabilite(r);
+  function row(label,val,style){
+    return '<div class="recap-row"><span class="k">'+label+'</span><span class="v"'+(style?' style="color:'+style+';"':'')+'>'+eur(val)+'</span></div>';
+  }
+  el.innerHTML =
+    '<div class="recap-title">Résultat</div>'+
+    row('Prix client HT', t.prixClientHT)+
+    row('TVA collectée sur le client', t.tvaClient)+
+    row('TVA récupérable sur le matériel', t.tvaRecuperable)+
+    row('TVA nette à laisser de côté', t.tvaNette, 'var(--warn)')+
+    row('Coût total du chantier', t.coutTotalChantier)+
+    row('Bénéfice avant IS', t.beneficeAvantIS)+
+    row('IS estimé à laisser de côté', t.isEstime, 'var(--warn)')+
+    '<div class="recap-row"><span class="k">Montant total à ne pas toucher</span><span class="v" style="color:var(--warn);font-weight:700;">'+eur(t.montantANePasToucher)+'</span></div>'+
+    '<div class="recap-total"><span class="k">Reste final dans la société</span><span class="v" style="color:var(--good);">'+eur(t.resteFinalSociete)+'</span></div>';
+}
+function bindRentabiliteEvents(ch){
+  var r=getRentabilite(ch);
+  ['rt_prixClientTTC','rt_materielTTC','rt_sousTraitantHT'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el) return;
+    el.addEventListener('input',function(){
+      var map={rt_prixClientTTC:'prixClientTTC',rt_materielTTC:'materielTTC',rt_sousTraitantHT:'sousTraitantHT'};
+      r[map[id]]=el.value===''?'':parseFloat(el.value);
+      renderRentabiliteRecap(ch);
+      scheduleSave(ch);
+    });
+  });
+  var tvaEl=document.getElementById('rt_tvaClientPct');
+  if(tvaEl) tvaEl.addEventListener('change',function(){ r.tvaClientPct=parseFloat(tvaEl.value); renderRentabiliteRecap(ch); scheduleSave(ch); });
+  var isEl=document.getElementById('rt_isPct');
+  if(isEl) isEl.addEventListener('change',function(){ r.isPct=parseFloat(isEl.value); renderRentabiliteRecap(ch); scheduleSave(ch); });
 }
 
 /* ---------------- print ---------------- */
